@@ -90,7 +90,16 @@ function(add_plugin target)
     )
 
     if (LINUX)
-        target_compile_definitions(${target} PRIVATE JUCE_JACK=1)
+        # Enable the JACK audio backend only when its dev headers are present
+        # (libjack-jackd2-dev). VST3/AU hosts don't need it; falling back to
+        # JUCE_JACK=0 keeps the plugin buildable without that optional dependency.
+        find_path(JACK_INCLUDE_DIR jack/jack.h)
+        if (JACK_INCLUDE_DIR)
+            target_compile_definitions(${target} PRIVATE JUCE_JACK=1)
+        else()
+            target_compile_definitions(${target} PRIVATE JUCE_JACK=0)
+            message(STATUS "  jack/jack.h not found; building ${target} with JUCE_JACK=0")
+        endif()
     endif()
 
     target_link_libraries(${target}

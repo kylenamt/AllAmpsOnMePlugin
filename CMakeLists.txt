@@ -10,51 +10,83 @@ set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15")
 
 # Main project
-project(MRTA VERSION 0.1.0 LANGUAGES C CXX)
+project(AllAmpsOnMePlugin VERSION 0.1.0 LANGUAGES C CXX)
 
 # Get 'add_plugin' function and add JUCE to project
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(add_plugin)
 
+# General plugin identity
+set(company_name "AllAmpsOnMe")
+set(company_copyright "AllAmpsOnMe")
+set(company_code "Aaom")
+set(company_bundle_id "com.allampsonme")
 
-# General variables
-# You should change this to something more interesting
-set(company_name "Theo's Additive Synthesizer")
-set(company_copyright "TASP")
-set(company_code "TASP")
-set(company_bundle_id "com.ModernRealTimeAudio")
+# ---------------------------------------------------------------------------
+# NeuralAmpModelerCore (Eigen, MIT). Populated only — we compile its sources
+# directly into the plugin target (it exposes no library target) and route
+# A2-shaped models through the generic WaveNet path (A2-fast OFF) so the live
+# model can be re-weighted for morphing via WaveNet::set_weights_().
+# ---------------------------------------------------------------------------
+include(FetchContent)
+FetchContent_Declare(NeuralAmpModelerCore
+    GIT_REPOSITORY https://github.com/sdatkinson/NeuralAmpModelerCore.git
+    GIT_TAG 3cde95c354d5ba6da01316cad90b05cfc4855053
+    GIT_SUBMODULES "Dependencies/eigen" # pull Eigen only (not AudioDSPTools)
+    GIT_SHALLOW FALSE
+)
+FetchContent_GetProperties(NeuralAmpModelerCore)
+if(NOT neuralampmodelercore_POPULATED)
+    FetchContent_Populate(NeuralAmpModelerCore)
+endif()
+set(nam_dir "${neuralampmodelercore_SOURCE_DIR}")
 
-## Plugin projects
+file(GLOB nam_core_sources
+    "${nam_dir}/NAM/*.cpp"
+    "${nam_dir}/NAM/wavenet/*.cpp")
+# Exclude the A2 fast path; we use the generic WaveNet so weights can be hot-swapped.
+list(FILTER nam_core_sources EXCLUDE REGEX "a2_fast\\.cpp$")
 
-# DSP directory helper variable
-set(dsp_source ${CMAKE_CURRENT_SOURCE_DIR}/projects/DSP)
+set(nam_include_dirs
+    "${nam_dir}"
+    "${nam_dir}/Dependencies/nlohmann"
+    "${nam_dir}/Dependencies/eigen")
 
-# GUI directory helper variable
-set(gui_source ${CMAKE_CURRENT_SOURCE_DIR}/projects/GUI)
+# ---------------------------------------------------------------------------
+# amp_morph — the AllAmpsOnMe embedding-morph amp plugin
+# ---------------------------------------------------------------------------
+set(aaom_source "${CMAKE_CURRENT_SOURCE_DIR}/projects/AAOM")
 
-# MRTA framework helper variable
-set(mrta_source ${CMAKE_CURRENT_SOURCE_DIR}/mrta_utils)
+# Embed the exported bundle.json into the binary (BinaryData::bundle_json).
+juce_add_binary_data(amp_morph_bundle SOURCES "${aaom_source}/assets/bundle.json")
 
-# Example project
-set(mfrtaa_source ${CMAKE_CURRENT_SOURCE_DIR}/projects/MyFirstRealTimeAudioApp)
-
-# additive synthesizer project
-set(additive_synth_source ${CMAKE_CURRENT_SOURCE_DIR}/projects/AdditiveSynthesizer)
-
-add_plugin(additive_synth
+add_plugin(amp_morph
     VERSION 0.1.0
-    PLUGIN_NAME "Additive Synthesizer"
-    PROD_NAME AdditiveSynthesizer
-    PROD_CODE AdSy
-    SYNTH TRUE
+    PLUGIN_NAME "AllAmpsOnMe Morph"
+    PROD_NAME AllAmpsOnMeMorph
+    PROD_CODE Aaom
+    SYNTH FALSE
     SOURCES
-        ${additive_synth_source}/AdditiveSynthesizerEditor.cpp
-        ${additive_synth_source}/AdditiveSynthesizerProcessor.cpp
-        ${dsp_source}/AddSynth/AddSynth.cpp
-        ${dsp_source}/AddSynth/PartialBank.cpp
-        ${dsp_source}/AddSynth/SpectralCoef.cpp
-    ${dsp_source}/StateVariableFilter.cpp
-    ${dsp_source}/EnvelopeGenerator.cpp
+        ${aaom_source}/AAOMProcessor.cpp
+        ${aaom_source}/AAOMEditor.cpp
+        ${aaom_source}/gui/XYPad.cpp
+        ${aaom_source}/gui/CornerSlot.cpp
+        ${aaom_source}/dsp/MorphModel.cpp
+        ${aaom_source}/dsp/MorphEngine.cpp
+        ${nam_core_sources}
     INCLUDE_DIRS
-        ${dsp_source}
-        ${additive_synth_source})
+        ${aaom_source}
+        ${aaom_source}/dsp
+        ${nam_include_dirs}
+    LINK_LIBS
+        amp_morph_bundle)
+
+# NAM core needs C++20 and float I/O samples (matching JUCE's float buffers).
+target_compile_features(amp_morph PUBLIC cxx_std_20)
+target_compile_definitions(amp_morph PRIVATE NAM_SAMPLE_FLOAT=1)
+
+# Optional dev iteration: load a bundle from disk instead of the embedded one.
+#   cmake -B build -DAAOM_DEV_BUNDLE_PATH=/abs/path/to/bundle.json
+if(DEFINED AAOM_DEV_BUNDLE_PATH)
+    target_compile_definitions(amp_morph PRIVATE AAOM_DEV_BUNDLE_PATH="${AAOM_DEV_BUNDLE_PATH}")
+endif()
