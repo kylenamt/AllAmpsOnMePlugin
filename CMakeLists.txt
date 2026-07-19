@@ -57,8 +57,11 @@ set(nam_include_dirs
 # ---------------------------------------------------------------------------
 set(aaom_source "${CMAKE_CURRENT_SOURCE_DIR}/projects/AAOM")
 
-# Embed the exported bundle.json into the binary (BinaryData::bundle_json).
-juce_add_binary_data(amp_morph_bundle SOURCES "${aaom_source}/assets/bundle.json")
+# Embed the exported bundle.json (BinaryData::bundle_json) and the default
+# profile catalogue (BinaryData::profiles_json) into the binary.
+juce_add_binary_data(amp_morph_bundle SOURCES
+    "${aaom_source}/assets/bundle.json"
+    "${aaom_source}/assets/profiles.json")
 
 add_plugin(amp_morph
     VERSION 0.1.0
@@ -69,8 +72,11 @@ add_plugin(amp_morph
     SOURCES
         ${aaom_source}/AAOMProcessor.cpp
         ${aaom_source}/AAOMEditor.cpp
-        ${aaom_source}/gui/XYPad.cpp
-        ${aaom_source}/gui/CornerSlot.cpp
+        ${aaom_source}/gui/MorphPad.cpp
+        ${aaom_source}/gui/AmpSlotComponent.cpp
+        ${aaom_source}/gui/ProfileLibrary.cpp
+        ${aaom_source}/gui/LcdReadout.cpp
+        ${aaom_source}/gui/AAOMLookAndFeel.cpp
         ${aaom_source}/dsp/MorphModel.cpp
         ${aaom_source}/dsp/MorphEngine.cpp
         ${nam_core_sources}

@@ -19,6 +19,10 @@ static const juce::String inputGain{"InputGain"};
 static const juce::String outputGain{"OutputGain"};
 static const juce::String morphX{"MorphX"};
 static const juce::String morphY{"MorphY"};
+static const juce::String eqBass{"EqBass"};
+static const juce::String eqMid{"EqMid"};
+static const juce::String eqTreble{"EqTreble"};
+static const juce::String eqPresence{"EqPresence"};
 } // namespace pid
 
 // One XY-pad corner as seen by the message thread / persistence. The audio
@@ -69,8 +73,18 @@ public:
     PasteResult tryPasteProfile(int corner, const juce::String& jsonText, bool allowRunMismatch, juce::String& message);
     void clearCorner(int corner);
 
+    // --- default profile catalogue (bundled profiles.json) -----------------
+    // Extra factory embeddings (same run as the bundle) the user can pick from
+    // per corner, in addition to pasting an aaom_profile from the clipboard.
+    int numCatalogProfiles() const { return static_cast<int>(catalog_.size()); }
+    juce::String catalogProfileName(int i) const;
+    // Load catalogue profile `profileIndex` into `corner`. Returns false on a
+    // bad index (the bundled set already matches the model dim/run).
+    bool loadCatalogProfile(int corner, int profileIndex);
+
 private:
     void loadBundle();
+    void loadCatalog();
     void seedCornersFromBundle();
     void pushCornerToEngine(int i);
 
@@ -82,6 +96,9 @@ private:
 
     std::array<CornerInfo, kNumCorners> corners_;
     std::atomic<int> cornerGen_{0};
+
+    // Bundled default profiles (from profiles.json), pre-validated to the model.
+    std::vector<CornerInfo> catalog_;
 
     // Audio-thread parameter mirrors (written by MRTA callbacks in process()).
     std::atomic<float> morphX_{0.5f};

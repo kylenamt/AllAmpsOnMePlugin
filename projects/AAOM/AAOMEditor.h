@@ -3,18 +3,23 @@
 #include <array>
 #include <memory>
 
-#include <GenericParameterEditor.h>
+#include <ParameterComponents.h>
 
-#include "gui/CornerSlot.h"
-#include "gui/XYPad.h"
+#include "gui/AAOMLookAndFeel.h"
+#include "gui/AmpSlotComponent.h"
+#include "gui/LcdReadout.h"
+#include "gui/MorphPad.h"
+#include "gui/ProfileLibrary.h"
 
 namespace aaom
 {
 
 class AAOMProcessor;
 
-// M4 editor: custom XY morph pad with 4 corner profile slots (paste/clear +
-// validation), input/output gain knobs, and a model status line.
+// Hardware-styled editor: brushed-metal chassis, engraved nameplate, 4 amp
+// corner modules around a CRT-style morph screen, an EQ fader bank, and
+// input/output knobs. Ported from the design handoff in
+// .claude/Audio plugin profile mixer/design_handoff_amp_morph.
 class AAOMEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -27,17 +32,41 @@ public:
 private:
     void timerCallback() override;
     void refreshCorners();
+    void handleSelect(int corner);
     void handlePaste(int corner);
     void handleClear(int corner);
+    void handlePick(int corner, int profileIndex);
     void doPaste(int corner, const juce::String& json, bool allowRunMismatch);
 
     AAOMProcessor& proc_;
 
-    juce::Label title_;
-    juce::Label status_;
-    XYPad pad_;
-    std::array<std::unique_ptr<CornerSlot>, 4> slots_;
-    mrta::GenericParameterEditor gains_;
+    AAOMLookAndFeel lookAndFeel_;
+    juce::TooltipWindow tooltipWindow_{this};
+
+    MorphPad pad_;
+    std::array<std::unique_ptr<AmpSlotComponent>, 4> slots_;
+    ProfileLibrary library_;
+
+    juce::Label subtitle_;
+    LcdReadout presetChip_;
+
+    mrta::ParameterSlider eqBass_;
+    mrta::ParameterSlider eqMid_;
+    mrta::ParameterSlider eqTreble_;
+    mrta::ParameterSlider eqPresence_;
+    std::array<juce::Label, 4> eqLabels_;
+
+    mrta::ParameterSlider inputGain_;
+    mrta::ParameterSlider outputGain_;
+    LcdReadout inputLcd_;
+    LcdReadout outputLcd_;
+    juce::Label inputLabel_;
+    juce::Label outputLabel_;
+
+    // Bounds cached in resized(), drawn in paint().
+    juce::Rectangle<float> titleBounds_;
+    juce::Rectangle<float> bottomStripBounds_;
+    int bottomStripDividerX_ = 0;
 
     int lastCornerGen_ = -1;
 

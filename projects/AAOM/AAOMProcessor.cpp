@@ -1,6 +1,7 @@
 #include "AAOMProcessor.h"
 #include "AAOMEditor.h"
 
+#include <algorithm>
 #include <cstring>
 #include <exception>
 #include <utility>
@@ -17,6 +18,13 @@ static std::vector<mrta::ParameterInfo> makeParameters()
         {pid::outputGain, "Output", "dB", 0.0f, -24.0f, 24.0f, 0.1f, 1.0f},
         {pid::morphX, "Morph X", "", 0.5f, 0.0f, 1.0f, 0.001f, 1.0f},
         {pid::morphY, "Morph Y", "", 0.5f, 0.0f, 1.0f, 0.001f, 1.0f},
+        // EQ: UI + automatable parameters only for now, not yet wired into the
+        // signal path (no DSP reads these). Front panel controls for a future
+        // tone-shaping stage.
+        {pid::eqBass, "Bass", "dB", 0.0f, -12.0f, 12.0f, 0.1f, 1.0f},
+        {pid::eqMid, "Mid", "dB", 0.0f, -12.0f, 12.0f, 0.1f, 1.0f},
+        {pid::eqTreble, "Treble", "dB", 0.0f, -12.0f, 12.0f, 0.1f, 1.0f},
+        {pid::eqPresence, "Presence", "dB", 0.0f, -12.0f, 12.0f, 0.1f, 1.0f},
     };
 }
 
@@ -43,6 +51,7 @@ AAOMProcessor::AAOMProcessor()
     registerParameterCallback(pid::morphY, [this](float v, bool) { morphY_.store(v); });
 
     loadBundle();
+    loadCatalog();
     seedCornersFromBundle();
 }
 
@@ -76,6 +85,71 @@ void AAOMProcessor::loadBundle()
     {
         bundleError_ = juce::String("Bundle load failed: ") + e.what();
     }
+}
+
+void AAOMProcessor::loadCatalog()
+{
+    catalog_.clear();
+    if (!engine_.ready())
+        return;
+
+    const int modelDim = engine_.model()->embeddingDim();
+    const juce::String modelRun = juce::String(engine_.model()->runSha8());
+
+    const juce::var root = juce::JSON::parse(
+        juce::String::fromUTF8(BinaryData::profiles_json, BinaryData::profiles_jsonSize));
+    if (!root.isArray())
+        return;
+
+    for (const juce::var& entry : *root.getArray())
+    {
+        if (!entry.isObject() || !entry.hasProperty("aaom_profile"))
+            continue;
+
+        const juce::var embVar = entry.getProperty("embedding", juce::var());
+        if (!embVar.isArray() || embVar.getArray()->size() != modelDim)
+            continue; // skip anything that doesn't fit this model
+
+        CornerInfo info;
+        info.assigned = true;
+        info.name = entry.getProperty("name", juce::var("profile")).toString();
+        info.runSha8 = entry.getProperty("run", juce::var()).toString();
+        info.embedding.resize(static_cast<std::size_t>(modelDim));
+        for (int i = 0; i < modelDim; ++i)
+            info.embedding[static_cast<std::size_t>(i)] = static_cast<float>(double(embVar[i]));
+
+        // Bundled catalogue should match the model's run; skip strays defensively.
+        if (info.runSha8.isNotEmpty() && modelRun.isNotEmpty() && info.runSha8 != modelRun)
+            continue;
+
+        catalog_.push_back(std::move(info));
+    }
+
+    // Sort by name so the Load menu can present alphabetical groups (amp variants
+    // that share a name prefix end up adjacent). Indices stay self-consistent:
+    // the menu and loadCatalogProfile() both address this same sorted vector.
+    std::sort(catalog_.begin(), catalog_.end(),
+              [](const CornerInfo& a, const CornerInfo& b) { return a.name.compareIgnoreCase(b.name) < 0; });
+}
+
+juce::String AAOMProcessor::catalogProfileName(int i) const
+{
+    if (i < 0 || i >= static_cast<int>(catalog_.size()))
+        return {};
+    return catalog_[static_cast<std::size_t>(i)].name;
+}
+
+bool AAOMProcessor::loadCatalogProfile(int corner, int profileIndex)
+{
+    if (corner < 0 || corner >= kNumCorners)
+        return false;
+    if (profileIndex < 0 || profileIndex >= static_cast<int>(catalog_.size()))
+        return false;
+
+    corners_[static_cast<std::size_t>(corner)] = catalog_[static_cast<std::size_t>(profileIndex)];
+    cornerGen_.fetch_add(1);
+    pushCornerToEngine(corner);
+    return true;
 }
 
 void AAOMProcessor::seedCornersFromBundle()
