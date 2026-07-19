@@ -1,6 +1,6 @@
 # AllAmpsOnMe Morph (`amp_morph`)
 
-![AllAmpsOnMe Morph plugin preview](assets\UI.png)
+![AllAmpsOnMe Morph plugin preview](./assets\UI.png)
 
 AllAmpsOnMe Morph is a VST3 / AU / Standalone amp plugin that morphs between
 four amp or pedal captures in real time on a 2D XY pad.
