@@ -32,8 +32,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 ships Xcode 15 (keeps the -ld_classic linker flag working).
-        os: [ubuntu-latest, macos-14, windows-latest]
+        # `label` names the download, so users can tell what a zip actually runs
+        # on — the macOS build is Apple Silicon only (see CMAKE_OSX_ARCHITECTURES).
+        include:
+          - os: ubuntu-latest
+            label: Linux
+          # macos-14 is Apple Silicon and ships Xcode 15 (keeps -ld_classic working).
+          - os: macos-14
+            label: macOS-arm64
+          - os: windows-latest
+            label: Windows
 
     steps:
       - name: Check out code
@@ -62,11 +70,11 @@ jobs:
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
-          find build/amp_morph_artefacts \
-            \( -name '*.vst3' -o -name '*.component' \) \
+          find build/amp_morph_artefacts -name '*.vst3' \
             -prune -exec cp -R {} dist/ \;
           echo "Collected:" && ls -la dist
-          cd dist && zip -r "$GITHUB_WORKSPACE/AllAmpsOnMeMorph-${{ runner.os }}.zip" .
+          test -n "$(ls -A dist)" || { echo "error: nothing packaged"; exit 1; }
+          cd dist && zip -r "$GITHUB_WORKSPACE/AllAmpsOnMeMorph-${{ matrix.label }}.zip" .
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -76,13 +84,14 @@ jobs:
           Get-ChildItem build/amp_morph_artefacts -Recurse -Directory -Filter *.vst3 |
             ForEach-Object { Copy-Item $_.FullName dist -Recurse }
           Write-Host "Collected:"; Get-ChildItem dist
-          Compress-Archive -Path dist/* -DestinationPath AllAmpsOnMeMorph-Windows.zip
+          if (-not (Get-ChildItem dist)) { throw "nothing packaged" }
+          Compress-Archive -Path dist/* -DestinationPath AllAmpsOnMeMorph-${{ matrix.label }}.zip
 
       # Downloadable from the Actions run page on every build (kept ~90 days).
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AllAmpsOnMeMorph-${{ runner.os }}
+          name: AllAmpsOnMeMorph-${{ matrix.label }}
           path: AllAmpsOnMeMorph-*.zip
 
   # Publishing runs once, after every platform has built, rather than from inside

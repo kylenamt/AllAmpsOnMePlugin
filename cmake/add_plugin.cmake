@@ -41,7 +41,10 @@ function(add_plugin target)
         MICROPHONE_PERMISSION_ENABLED TRUE
         COMPANY_COPYRIGHT ${company_copyright}
         COMPANY_NAME ${company_name}
-        FORMATS VST3 AU Standalone
+        # AU is not built for now: only the VST3 target is compiled in CI, so
+        # listing AU here produced an empty .component skeleton that shipped in
+        # the macOS zip and failed AU validation.
+        FORMATS VST3 Standalone
         PLUGIN_NAME ${AP_PLUGIN_NAME}
         PLUGIN_MANUFACTURER_CODE ${company_code}
         PLUGIN_CODE ${AP_PROD_CODE}

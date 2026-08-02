@@ -3,11 +3,13 @@ cmake_minimum_required(VERSION 3.25)
 # Windows static runtime
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-# MacOS unversal binary
-set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64")
+# MacOS: Apple Silicon only. A universal binary carries a full second copy of the
+# code and the embedded model JSON, which roughly doubled the macOS download.
+set(CMAKE_OSX_ARCHITECTURES "arm64")
 
-# MacOS minimum deployment target
-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15")
+# MacOS minimum deployment target. arm64 macOS starts at 11.0 (Big Sur), so the
+# old 10.15 floor no longer describes anything this can run on.
+set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0")
 
 # Main project
 project(AllAmpsOnMePlugin VERSION 0.1.0 LANGUAGES C CXX)
