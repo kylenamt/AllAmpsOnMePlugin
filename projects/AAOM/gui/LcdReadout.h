@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include <juce_gui_basics/juce_gui_basics.h>
 
 namespace aaom
@@ -20,7 +22,12 @@ public:
     void setTextColour(juce::Colour colour);
     void setCaretShown(bool shown); // small dropdown triangle at the left edge
 
+    // Set to make the chip behave as a button (e.g. the model selector menu).
+    // Only fires when the chip also intercepts mouse clicks.
+    std::function<void()> onClick;
+
     void paint(juce::Graphics&) override;
+    void mouseDown(const juce::MouseEvent&) override;
 
 private:
     juce::String text_;

@@ -32,37 +32,18 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
     subtitle_.setFont(juce::Font(10.0f, juce::Font::plain).withExtraKerningFactor(0.35f));
     addAndMakeVisible(subtitle_);
 
-    // No preset system exists in this plugin; the chip is decorative chrome
-    // (matches the hardware look) rather than a functioning preset menu. The
-    // loaded model's stats (or the bundle-load error) go on its tooltip,
-    // since the chassis has no permanent room for that diagnostic text.
-    presetChip_.setText("NO PRESET");
+    // The chip is the model selector: it shows which bundle is live and opens a
+    // menu to switch. The loaded model's stats (or the load error / warning) go
+    // on its tooltip, since the chassis has no permanent room for that text.
     presetChip_.setTextColour(juce::Colour(0xffc9a24a));
     presetChip_.setCaretShown(true);
     presetChip_.setInterceptsMouseClicks(true, false);
+    presetChip_.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    presetChip_.onClick = [this] { showModelMenu(); };
     addAndMakeVisible(presetChip_);
+    // Populated by refreshModelChip() below — it refreshes the corner slots too,
+    // so it has to run after those are constructed.
 
-    if (proc_.modelLoaded())
-    {
-        const auto* m = proc_.engine().model();
-        const juce::String status = juce::String("Model: C=") + juce::String(m->channels()) + ", E="
-                                    + juce::String(m->embeddingDim()) + ", " + juce::String(m->numLayers())
-                                    + " layers, run " + juce::String(m->runSha8());
-        subtitle_.setText("FOUR-CORNER TONE MIXER", juce::dontSendNotification);
-        subtitle_.setColour(juce::Label::textColourId, juce::Colour(0xff8a8178));
-        presetChip_.setTooltip(status);
-    }
-    else
-    {
-        const juce::String error = proc_.bundleError().isNotEmpty() ? proc_.bundleError()
-                                                                    : juce::String("No model loaded");
-        subtitle_.setText(error, juce::dontSendNotification);
-        subtitle_.setColour(juce::Label::textColourId, palette::clearTop.brighter(0.6f));
-        presetChip_.setTooltip(error);
-    }
-
-    // EQ: UI + automatable parameters only for now, not yet wired into the
-    // signal path (see AAOMProcessor::makeParameters).
     for (auto* slider : {&eqBass_, &eqMid_, &eqTreble_, &eqPresence_})
     {
         slider->setSliderStyle(juce::Slider::LinearVertical);
@@ -116,7 +97,8 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
     library_.onPick = [this](int corner, int idx) { handlePick(corner, idx); };
     addChildComponent(library_);
 
-    refreshCorners();
+    // Fills in the chip, subtitle and corner slots. Must come after slots_ exist.
+    refreshModelChip();
 
     setResizable(true, true);
     setResizeLimits(480, 448, 960, 896);
@@ -149,10 +131,146 @@ void AAOMEditor::timerCallback()
 
     if (proc_.cornerGeneration() != lastCornerGen_)
         refreshCorners();
+
+    // The model can also change outside the menu (e.g. session restore).
+    if (proc_.modelGeneration() != lastModelGen_)
+        refreshModelChip();
+}
+
+void AAOMEditor::refreshModelChip()
+{
+    lastModelGen_ = proc_.modelGeneration();
+
+    // Chip shows the live bundle's name; the nameplate subtitle and the chip
+    // tooltip carry the detail (stats, or why we are not on the wanted model).
+    presetChip_.setText(proc_.modelDisplayName().toUpperCase());
+
+    if (proc_.modelLoaded())
+    {
+        const auto* m = proc_.engine().model();
+        juce::String status = juce::String("Model: C=") + juce::String(m->channels()) + ", E="
+                              + juce::String(m->embeddingDim()) + ", " + juce::String(m->numLayers())
+                              + " layers, run " + juce::String(m->runSha8());
+        status << "\nSource: "
+               << (proc_.usingBuiltInModel() ? juce::String("built-in") : proc_.modelFile().getFullPathName());
+        status << "\nProfiles: " << juce::String(proc_.numCatalogProfiles());
+        status << "\n\nClick to switch model.";
+
+        const bool warned = proc_.modelWarning().isNotEmpty();
+        if (warned)
+            status = proc_.modelWarning() + "\n\n" + status;
+
+        subtitle_.setText(warned ? proc_.modelWarning() : juce::String("FOUR-CORNER TONE MIXER"),
+                          juce::dontSendNotification);
+        subtitle_.setColour(juce::Label::textColourId,
+                            warned ? palette::clearTop.brighter(0.6f) : juce::Colour(0xff8a8178));
+        presetChip_.setTextColour(warned ? palette::clearTop.brighter(0.6f) : juce::Colour(0xffc9a24a));
+        presetChip_.setTooltip(status);
+    }
+    else
+    {
+        const juce::String error = proc_.bundleError().isNotEmpty() ? proc_.bundleError()
+                                                                    : juce::String("No model loaded");
+        subtitle_.setText(error, juce::dontSendNotification);
+        subtitle_.setColour(juce::Label::textColourId, palette::clearTop.brighter(0.6f));
+        presetChip_.setTextColour(palette::clearTop.brighter(0.6f));
+        presetChip_.setTooltip(error + "\n\nClick to switch model.");
+    }
+
+    // A new model brings a new catalogue and freshly reseeded corners.
+    refreshCorners();
+}
+
+void AAOMEditor::showModelMenu()
+{
+    const juce::StringArray recents = proc_.recentModelFiles();
+    const juce::File current = proc_.modelFile();
+
+    // IDs: 2 = browse, 3 = clear recents, 100+n = recents[n], 1000+i = built-in i.
+    juce::PopupMenu menu;
+    const int numBuiltIn = AAOMProcessor::numBuiltInModels();
+    if (numBuiltIn > 1)
+        menu.addSectionHeader("Built-in");
+    for (int i = 0; i < numBuiltIn; ++i)
+        menu.addItem(1000 + i, AAOMProcessor::builtInModelName(i), true, proc_.builtInModelIndex() == i);
+
+    if (!recents.isEmpty())
+    {
+        menu.addSeparator();
+        menu.addSectionHeader("Recent");
+        for (int i = 0; i < recents.size(); ++i)
+        {
+            const juce::File f{recents[i]};
+            // Missing files stay listed but greyed out, so a moved bundle is
+            // visible rather than silently vanishing from the menu.
+            menu.addItem(100 + i, f.getFileNameWithoutExtension(), f.existsAsFile(), f == current);
+        }
+    }
+
+    menu.addSeparator();
+    menu.addItem(2, "Load bundle...");
+    menu.addItem(3, "Clear recent list", !recents.isEmpty(), false);
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(presetChip_),
+                       [this, recents](int result) {
+                           if (result == 0)
+                               return;
+                           if (result >= 1000)
+                           {
+                               proc_.loadBuiltInModel(result - 1000);
+                               refreshModelChip();
+                           }
+                           else if (result == 2)
+                           {
+                               browseForModel();
+                           }
+                           else if (result == 3)
+                           {
+                               proc_.clearRecentModelFiles();
+                           }
+                           else if (result >= 100 && result - 100 < recents.size())
+                           {
+                               loadModel(juce::File{recents[result - 100]});
+                           }
+                       });
+}
+
+void AAOMEditor::browseForModel()
+{
+    const juce::File start = proc_.usingBuiltInModel()
+                                 ? juce::File::getSpecialLocation(juce::File::userDocumentsDirectory)
+                                 : proc_.modelFile().getParentDirectory();
+
+    chooser_ = std::make_unique<juce::FileChooser>("Load an AAOM bundle", start, "*.json");
+    chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this](const juce::FileChooser& fc) {
+                              const juce::File file = fc.getResult();
+                              if (file != juce::File{})
+                                  loadModel(file);
+                          });
+}
+
+void AAOMEditor::loadModel(const juce::File& file)
+{
+    juce::String message;
+    if (proc_.loadModelFromFile(file, message))
+    {
+        refreshModelChip();
+        return;
+    }
+
+    // The live model is untouched on failure, so this is purely informational.
+    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Model not loaded",
+                                                message, this);
 }
 
 void AAOMEditor::refreshCorners()
 {
+    // Reachable from refreshModelChip(), which the constructor calls; bail out
+    // rather than dereferencing slots that have not been built yet.
+    if (slots_[0] == nullptr)
+        return;
+
     lastCornerGen_ = proc_.cornerGeneration();
     std::array<bool, 4> assigned{{false, false, false, false}};
     for (int i = 0; i < 4; ++i)

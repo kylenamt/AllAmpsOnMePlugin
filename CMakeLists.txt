@@ -56,12 +56,18 @@ set(nam_include_dirs
 # amp_morph — the AllAmpsOnMe embedding-morph amp plugin
 # ---------------------------------------------------------------------------
 set(aaom_source "${CMAKE_CURRENT_SOURCE_DIR}/projects/AAOM")
+set(dsp_source "${CMAKE_CURRENT_SOURCE_DIR}/projects/DSP")
 
-# Embed the exported bundle.json (BinaryData::bundle_json) and the default
-# profile catalogue (BinaryData::profiles_json) into the binary.
+# Embed every built-in model package into the binary. Each model lives in its
+# own assets/<run>/ folder holding an exported bundle plus its profile
+# catalogue; the two are run-locked to each other. The BinaryData symbols are
+# derived from the file names and are wired up in AAOMProcessor's built-in
+# table, which also decides which one is the default.
 juce_add_binary_data(amp_morph_bundle SOURCES
-    "${aaom_source}/assets/bundle.json"
-    "${aaom_source}/assets/profiles.json")
+    "${aaom_source}/assets/nam_a2_256/nam_a2_256_bundle.json"
+    "${aaom_source}/assets/nam_a2_256/nam_a2_256_profiles.json"
+    "${aaom_source}/assets/wavenet_a2/bundle.json"
+    "${aaom_source}/assets/wavenet_a2/profiles.json")
 
 add_plugin(amp_morph
     VERSION 0.1.0
@@ -79,10 +85,13 @@ add_plugin(amp_morph
         ${aaom_source}/gui/AAOMLookAndFeel.cpp
         ${aaom_source}/dsp/MorphModel.cpp
         ${aaom_source}/dsp/MorphEngine.cpp
+        ${dsp_source}/Biquad.cpp
+        ${dsp_source}/ParametricEQ.cpp
         ${nam_core_sources}
     INCLUDE_DIRS
         ${aaom_source}
         ${aaom_source}/dsp
+        ${dsp_source}
         ${nam_include_dirs}
     LINK_LIBS
         amp_morph_bundle)

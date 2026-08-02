@@ -1,6 +1,8 @@
 #include "AAOMLookAndFeel.h"
 #include "Palette.h"
 
+#include <cmath>
+
 namespace aaom
 {
 
@@ -110,6 +112,45 @@ void AAOMLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int widt
     g.fillRoundedRectangle(track, trackW * 0.5f);
     g.setColour(inkBorder);
     g.drawRoundedRectangle(track, trackW * 0.5f, 1.0f);
+
+    // Detent marks, one per parameter step. JUCE maps a vertical slider's value
+    // linearly across [y, y + height] with the maximum at the top, so
+    // valueToProportionOfLength gives the exact tick positions (and stays right
+    // if the parameter is ever skewed). Ticks are thinned out when the steps are
+    // finer than the pixels can separate, and the centre detent is emphasised.
+    const double interval = slider.getInterval();
+    const double span = slider.getMaximum() - slider.getMinimum();
+    if (interval > 0.0 && span > 0.0)
+    {
+        const int numIntervals = juce::roundToInt(span / interval);
+        if (numIntervals > 0 && numIntervals <= 512)
+        {
+            constexpr float minSpacing = 7.0f;
+            int stride = 1;
+            while (stride < numIntervals
+                   && static_cast<float>(height) * static_cast<float>(stride)
+                          / static_cast<float>(numIntervals) < minSpacing)
+                ++stride;
+
+            const float outer = juce::jmin(9.0f, static_cast<float>(width) * 0.5f);
+            const float inner = trackW * 0.5f + 2.0f;
+            if (outer > inner)
+            {
+                for (int i = 0; i <= numIntervals; i += stride)
+                {
+                    const double value = slider.getMinimum() + interval * i;
+                    const auto prop = static_cast<float>(slider.valueToProportionOfLength(value));
+                    const float ty = static_cast<float>(y) + (1.0f - prop) * static_cast<float>(height);
+
+                    const bool isCentre = std::abs(prop - 0.5f) < 1.0e-3f;
+                    g.setColour(isCentre ? accentHardware.withAlpha(0.55f) : textFaint.withAlpha(0.45f));
+                    const float len = isCentre ? outer - inner : (outer - inner) * 0.7f;
+                    g.fillRect(cx - inner - len, ty - 0.5f, len, 1.0f);
+                    g.fillRect(cx + inner, ty - 0.5f, len, 1.0f);
+                }
+            }
+        }
+    }
 
     const float capH = 14.0f;
     const float capW = juce::jmax(18.0f, static_cast<float>(width) - 2.0f);

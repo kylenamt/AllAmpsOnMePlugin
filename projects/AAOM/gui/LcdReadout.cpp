@@ -30,6 +30,12 @@ void LcdReadout::setCaretShown(bool shown)
     repaint();
 }
 
+void LcdReadout::mouseDown(const juce::MouseEvent&)
+{
+    if (onClick)
+        onClick();
+}
+
 void LcdReadout::paint(juce::Graphics& g)
 {
     using namespace palette;

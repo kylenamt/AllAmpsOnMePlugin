@@ -78,10 +78,16 @@ int main(int argc, char** argv)
                 model->numLayers(), model->headKernel(), model->bundleSampleRate(), model->runSha8().c_str());
 
     check(model->channels() == 8, "channels == 8");
-    check(model->embeddingDim() == 128, "embedding_dim == 128");
     check(model->numLayers() == 23, "23 layers");
     check(model->headKernel() == 16, "head kernel == 16");
     check(model->profiles().size() >= 1, "at least one profile");
+    // embedding_dim is per-model (the exporter/make_bundle.py --embed varies it),
+    // so assert the invariant that actually matters rather than one run's value:
+    // it must be positive and every profile must agree with it.
+    check(model->embeddingDim() > 0, "embedding_dim > 0");
+    check(!model->profiles().empty()
+              && static_cast<int>(model->profiles()[0].embedding.size()) == model->embeddingDim(),
+          "profile embedding length == embedding_dim");
 
     // --- analytic weight-count cross-check ---------------------------------
     // C(rechannel) + sum_i(C*C*k_i + C + C + C*C + C) + C*headK + head_b(1) + head_scale(1)

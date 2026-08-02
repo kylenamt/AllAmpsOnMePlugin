@@ -38,6 +38,12 @@ private:
     void handlePick(int corner, int profileIndex);
     void doPaste(int corner, const juce::String& json, bool allowRunMismatch);
 
+    // Model selector (the LCD chip in the nameplate).
+    void showModelMenu();
+    void browseForModel();
+    void loadModel(const juce::File& file);
+    void refreshModelChip();
+
     AAOMProcessor& proc_;
 
     AAOMLookAndFeel lookAndFeel_;
@@ -69,6 +75,10 @@ private:
     int bottomStripDividerX_ = 0;
 
     int lastCornerGen_ = -1;
+    int lastModelGen_ = -1;
+
+    // Kept alive for the duration of the async native file dialog.
+    std::unique_ptr<juce::FileChooser> chooser_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AAOMEditor)
 };
