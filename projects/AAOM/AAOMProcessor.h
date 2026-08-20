@@ -8,6 +8,7 @@
 #include <BaseProcessor.h>
 #include <ParametricEQ.h>
 
+#include "dsp/FftConvolver.h"
 #include "dsp/MorphEngine.h"
 #include "dsp/Resampler.h"
 
@@ -25,6 +26,7 @@ static const juce::String eqBass{"EqBass"};
 static const juce::String eqMid{"EqMid"};
 static const juce::String eqTreble{"EqTreble"};
 static const juce::String eqPresence{"EqPresence"};
+static const juce::String cabOn{"CabOn"};
 } // namespace pid
 
 // One XY-pad corner as seen by the message thread / persistence. The audio
@@ -96,6 +98,32 @@ public:
     juce::StringArray recentModelFiles() const;
     void clearRecentModelFiles();
 
+    // --- cabinet IR ---------------------------------------------------------
+    // A WAV impulse response convolved onto the signal after the tone stack
+    // (model -> tone -> cab), by zero-latency partitioned FFT convolution. The
+    // IR is kept as read from the file and re-conditioned (resampled to the host
+    // rate, trimmed, normalised) whenever the rate changes, so a session moved
+    // between a 44.1 and a 96 kHz host still convolves the same cabinet.
+
+    // Longest IR kept, in seconds. Cabinet IRs are far shorter than this; the
+    // cap stops a reverb-length file from silently costing a core.
+    static constexpr double kMaxIrSeconds = 2.0;
+
+    // Load a mono/multi-channel WAV (or any format JUCE reads). On failure the
+    // currently loaded IR is left untouched and `message` says why.
+    bool loadIrFromFile(const juce::File& file, juce::String& message);
+    void clearIr();
+
+    bool irLoaded() const { return !irSource_.empty(); }
+    juce::File irFile() const { return irFile_; }
+    juce::String irDisplayName() const;
+    // Human-readable detail about the loaded IR (length, rate, channel taken).
+    const juce::String& irStatus() const { return irStatus_; }
+    int irGeneration() const { return irGen_.load(); } // bumps on any IR change
+
+    juce::StringArray recentIrFiles() const;
+    void clearRecentIrFiles();
+
     // --- corners (message thread) ------------------------------------------
     static constexpr int kNumCorners = MorphEngine::kNumCorners;
     const CornerInfo& corner(int i) const { return corners_[static_cast<std::size_t>(i)]; }
@@ -142,8 +170,16 @@ private:
                                                        const std::vector<CornerInfo>& newCatalog,
                                                        int& numLost) const;
 
+    // Condition irSource_ for the current host rate (resample, trim, normalise)
+    // and hand it to the convolver. A no-op until prepare() has supplied a rate;
+    // prepare() calls it again itself.
+    void rebuildConvolver();
+
     juce::PropertiesFile* settings();
-    void noteRecentModel(const juce::File& file);
+    // Most-recent-first, de-duplicated, bounded file lists kept in the settings
+    // file (models and IRs each have their own key).
+    juce::StringArray recentFiles(const juce::String& key) const;
+    void noteRecentFile(const juce::String& key, const juce::File& file);
 
     void getStateInformation(juce::MemoryBlock& destData) override;
     void setStateInformation(const void* data, int sizeInBytes) override;
@@ -192,6 +228,21 @@ private:
         EqNumBands
     };
     DSP::ParametricEqualizer eq_{EqNumBands, 1};
+
+    // Cabinet IR, convolved after the tone stack. irSource_ is the file's own
+    // samples (channel 0) at irSourceRate_; cab_ holds the host-rate version.
+    FftConvolver cab_;
+    juce::File irFile_;
+    std::vector<float> irSource_;
+    double irSourceRate_ = 0.0;
+    int irSourceChannels_ = 0;
+    bool irTruncated_ = false; // file was longer than kMaxIrSeconds
+    juce::String irStatus_;
+    std::atomic<int> irGen_{0};
+    std::atomic<bool> cabOn_{true};
+    // Audio-thread mirror of the switch: a bypassed convolver stops being fed,
+    // so its delay lines are stale and get zeroed on the way back in.
+    bool cabWasOn_ = true;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AAOMProcessor)
 };

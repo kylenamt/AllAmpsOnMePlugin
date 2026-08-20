@@ -13,12 +13,28 @@
 //   * For morphing, re-fold a new embedding and hot-swap the weights on the live
 //     WaveNet via set_weights_ (no reallocation, no reconstruction).
 //
-// The fold identity (per layer, per output channel c):
+// Two conditioning architectures fold into the same stream:
+//
+//   film_wavenet_a2 -- gamma/beta = film(e) scale the layer's *output*:
 //     z = conv(x) + mixin(clean);  z = gamma*z + beta;  z = leaky_relu(z)
 //   =>  conv.weight[c]  *= gamma[c]
 //       conv.bias[c]     = gamma[c]*conv.bias[c] + beta[c]
 //       mixin.weight[c] *= gamma[c]
-// which is bit-for-bit equivalent to the unfolded FiLM forward for a fixed e.
+//   which is equivalent to the unfolded FiLM forward for a fixed e.
+//
+//   delta_wavenet_a2 -- the embedding writes a low-rank residual straight onto
+//   the layer's *weights*, so there is no identity to derive; folding is the
+//   addition the layer would have performed anyway:
+//     coeff = delta_coeff_w . e + delta_coeff_b            [R]
+//     flat  = coeff . delta_basis                          [C*C*k + 2C]
+//     (dW, db, dm) = split(flat, (C*C*k, C, C))
+//   =>  conv.weight  += dW;  conv.bias += db;  mixin.weight += dm
+//   The exporter ships delta_basis already premultiplied by `scale` and with
+//   its rows normalised, so nothing here rescales or normalises.
+//
+// In both cases the folded stream is an *affine* function of e -- see
+// MorphEngine, which relies on that to blend folded corners instead of
+// re-folding a blended embedding.
 
 #include <cstddef>
 #include <memory>
@@ -33,6 +49,17 @@ namespace nam { namespace wavenet { class WaveNet; } }
 
 namespace aaom
 {
+
+// Which conditioning architecture the bundle was trained with. Both fold to
+// the same NAM weight stream; they differ only in how foldEmbedding() derives
+// the per-layer conv/bias/mixin numbers from `e`.
+enum class ArchType
+{
+    Film,  // "film_wavenet_a2"  -- per-channel output gain/offset
+    Delta  // "delta_wavenet_a2" -- low-rank residual on the conv weights
+};
+
+const char* archTypeName(ArchType t);
 
 struct Profile
 {
@@ -54,6 +81,9 @@ public:
     static std::unique_ptr<MorphModel> fromBundleJson(const std::string& jsonText);
 
     // --- Architecture / metadata -------------------------------------------
+    ArchType archType() const { return archType_; }
+    // Rank of the per-layer weight residual. 0 for the FiLM arch.
+    int deltaRank() const { return deltaRank_; }
     int channels() const { return channels_; }
     int embeddingDim() const { return embeddingDim_; }
     int numLayers() const { return static_cast<int>(layers_.size()); }
@@ -84,6 +114,11 @@ public:
     // once buildDsp() has run at the current architecture. No-op if no DSP.
     void setEmbedding(const std::vector<float>& e);
 
+    // Hot-swap an already-folded stream (namWeightCount() floats) onto the live
+    // WaveNet, skipping the fold. Real-time safe; no-op if no DSP or on a length
+    // mismatch. Used by MorphEngine, which blends folded corners itself.
+    void setWeights(std::vector<float>& namWeights);
+
     // Process `numFrames` mono samples in place-safe fashion (in may == out).
     void process(NAM_SAMPLE* in, NAM_SAMPLE* out, int numFrames);
 
@@ -95,8 +130,11 @@ private:
         std::vector<float> convW;  // [C, C, k]  (out, in, kernel), C-order
         std::vector<float> convB;  // [C]
         std::vector<float> mixinW; // [C, 1, 1]
-        std::vector<float> filmW;  // [2C, E]    (gamma rows 0..C-1, beta rows C..2C-1)
-        std::vector<float> filmB;  // [2C]
+        std::vector<float> filmW;  // [2C, E]    (gamma rows 0..C-1, beta rows C..2C-1)  -- Film only
+        std::vector<float> filmB;  // [2C]                                                 -- Film only
+        std::vector<float> coeffW; // [R, E]     row-major                                 -- Delta only
+        std::vector<float> coeffB; // [R]                                                  -- Delta only
+        std::vector<float> basis;  // [R, C*C*k + 2C] row-major, scale-premultiplied        -- Delta only
         std::vector<float> x1W;    // [C, C, 1]
         std::vector<float> x1B;    // [C]
         int kernel = 0;
@@ -105,6 +143,9 @@ private:
     // Build the nlohmann config+weights document (as text) for get_dsp.
     std::string buildNamJson(const std::vector<float>& namWeights) const;
 
+    ArchType archType_ = ArchType::Film;
+    int deltaRank_ = 0;
+    std::size_t maxDeltaOut_ = 0; // max over layers of C*C*k + 2C (Delta scratch size)
     int channels_ = 0;
     int embeddingDim_ = 0;
     int headKernel_ = 0;
@@ -127,10 +168,12 @@ private:
     nam::wavenet::WaveNet* wavenet_ = nullptr; // non-owning view of dsp_
     std::vector<float> scratchWeights_;        // reused by setEmbedding (RT path)
 
-    // Per-fold gamma/beta scratch, sized to `channels_` on first use. mutable so
-    // foldEmbedding() stays const while remaining allocation-free after warm-up.
-    mutable std::vector<float> gammaScratch_;
-    mutable std::vector<float> betaScratch_;
+    // Per-fold scratch, sized on first use. mutable so foldEmbedding() stays
+    // const while remaining allocation-free after warm-up.
+    mutable std::vector<float> gammaScratch_; // [C]          -- Film
+    mutable std::vector<float> betaScratch_;  // [C]          -- Film
+    mutable std::vector<float> coeffScratch_; // [R]          -- Delta
+    mutable std::vector<float> deltaScratch_; // [maxDeltaOut_] -- Delta
 };
 
 } // namespace aaom

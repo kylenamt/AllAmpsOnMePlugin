@@ -6,6 +6,7 @@
 
 #include "json.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 
@@ -70,6 +71,11 @@ std::vector<int> readIntArray(const json& node, const char* name)
 }
 } // namespace
 
+const char* archTypeName(ArchType t)
+{
+    return t == ArchType::Delta ? "delta_wavenet_a2" : "film_wavenet_a2";
+}
+
 MorphModel::~MorphModel() = default;
 
 std::unique_ptr<MorphModel> MorphModel::fromBundleJson(const std::string& jsonText)
@@ -108,6 +114,27 @@ std::unique_ptr<MorphModel> MorphModel::fromBundleJson(const std::string& jsonTe
     if (C <= 0 || E <= 0 || model->headKernel_ <= 0)
         throw std::runtime_error("arch has non-positive channels/embedding_dim/head_kernel");
 
+    // Conditioning architecture. Bundles predating the field are FiLM. Anything
+    // else (tabledelta_wavenet_a2, mlpfilm_wavenet_a2, ...) is rejected loudly
+    // rather than reinterpreted -- the layer tensors would be misread silently.
+    const std::string archName = arch.value("type", std::string("film_wavenet_a2"));
+    if (archName == "delta_wavenet_a2")
+    {
+        model->archType_ = ArchType::Delta;
+        model->deltaRank_ = arch.value("delta_rank", 0);
+        if (model->deltaRank_ <= 0)
+            throw std::runtime_error("delta bundle is missing a positive 'arch.delta_rank'");
+    }
+    else if (archName == "film_wavenet_a2")
+    {
+        model->archType_ = ArchType::Film;
+    }
+    else
+    {
+        throw std::runtime_error("unsupported arch.type '" + archName
+                                 + "' (expected 'film_wavenet_a2' or 'delta_wavenet_a2')");
+    }
+
     // --- weights ------------------------------------------------------------
     const json& w = j.at("weights");
     model->rechannelW_ = readTensor(w.at("rechannel_w"), "rechannel_w", static_cast<std::size_t>(C));
@@ -127,8 +154,21 @@ std::unique_ptr<MorphModel> MorphModel::fromBundleJson(const std::string& jsonTe
         L.convW = readTensor(lj.at("conv_w"), "conv_w", Cc * Cc * k);
         L.convB = readTensor(lj.at("conv_b"), "conv_b", Cc);
         L.mixinW = readTensor(lj.at("mixin_w"), "mixin_w", Cc);
-        L.filmW = readTensor(lj.at("film_w"), "film_w", 2 * Cc * static_cast<std::size_t>(E));
-        L.filmB = readTensor(lj.at("film_b"), "film_b", 2 * Cc);
+        if (model->archType_ == ArchType::Delta)
+        {
+            const std::size_t R = static_cast<std::size_t>(model->deltaRank_);
+            // basis rows span the layer's whole residual: dW [C,C,k], db [C], dm [C].
+            const std::size_t nOut = Cc * Cc * k + 2 * Cc;
+            L.coeffW = readTensor(lj.at("delta_coeff_w"), "delta_coeff_w", R * static_cast<std::size_t>(E));
+            L.coeffB = readTensor(lj.at("delta_coeff_b"), "delta_coeff_b", R);
+            L.basis = readTensor(lj.at("delta_basis"), "delta_basis", R * nOut);
+            model->maxDeltaOut_ = std::max(model->maxDeltaOut_, nOut);
+        }
+        else
+        {
+            L.filmW = readTensor(lj.at("film_w"), "film_w", 2 * Cc * static_cast<std::size_t>(E));
+            L.filmB = readTensor(lj.at("film_b"), "film_b", 2 * Cc);
+        }
         L.x1W = readTensor(lj.at("x1_w"), "x1_w", Cc * Cc);
         L.x1B = readTensor(lj.at("x1_b"), "x1_b", Cc);
     }
@@ -175,7 +215,14 @@ void MorphModel::foldEmbedding(const std::vector<float>& e, std::vector<float>& 
     const int C = channels_;
     const int E = embeddingDim_;
 
-    if (static_cast<int>(gammaScratch_.size()) != C)
+    if (archType_ == ArchType::Delta)
+    {
+        if (static_cast<int>(coeffScratch_.size()) != deltaRank_)
+            coeffScratch_.assign(deltaRank_, 0.0f);
+        if (deltaScratch_.size() != maxDeltaOut_)
+            deltaScratch_.assign(maxDeltaOut_, 0.0f);
+    }
+    else if (static_cast<int>(gammaScratch_.size()) != C)
     {
         gammaScratch_.assign(C, 0.0f);
         betaScratch_.assign(C, 0.0f);
@@ -193,37 +240,77 @@ void MorphModel::foldEmbedding(const std::vector<float>& e, std::vector<float>& 
     {
         const int k = L.kernel;
 
-        // gamma / beta = film(e); film_w is [2C, E] row-major, film_b is [2C].
-        // gamma = rows [0, C), beta = rows [C, 2C).
-        for (int c = 0; c < C; ++c)
+        if (archType_ == ArchType::Delta)
         {
-            const float* gRow = &L.filmW[static_cast<std::size_t>(c) * E];
-            const float* bRow = &L.filmW[static_cast<std::size_t>(C + c) * E];
-            float gamma = L.filmB[c];
-            float beta = L.filmB[C + c];
-            for (int jdx = 0; jdx < E; ++jdx)
+            const int R = deltaRank_;
+            const std::size_t nW = static_cast<std::size_t>(C) * C * k;
+            const std::size_t nOut = nW + 2 * static_cast<std::size_t>(C);
+
+            // coeff = delta_coeff_w . e + delta_coeff_b; coeff_w is [R, E] row-major.
+            for (int r = 0; r < R; ++r)
             {
-                gamma += gRow[jdx] * e[jdx];
-                beta += bRow[jdx] * e[jdx];
+                const float* row = &L.coeffW[static_cast<std::size_t>(r) * E];
+                float acc = L.coeffB[r];
+                for (int jdx = 0; jdx < E; ++jdx)
+                    acc += row[jdx] * e[jdx];
+                coeffScratch_[r] = acc;
             }
 
-            // conv.weight[c] *= gamma  (layout [out=c][in][k], contiguous C*k block)
-            const float* convRow = &L.convW[static_cast<std::size_t>(c) * C * k];
-            for (int t = 0; t < C * k; ++t)
-                out.push_back(convRow[t] * gamma);
-            // (conv bias and mixin need gamma/beta too — recomputed below to keep
-            //  the stream in NAM order: all conv weights, then all conv biases.)
-            gammaScratch_[c] = gamma;
-            betaScratch_[c] = beta;
+            // flat = coeff . delta_basis; basis is [R, nOut] row-major, already
+            // scale-premultiplied and row-normalised by the exporter. Rank outer so
+            // each basis row is one contiguous sweep.
+            float* delta = deltaScratch_.data();
+            std::fill(delta, delta + nOut, 0.0f);
+            for (int r = 0; r < R; ++r)
+            {
+                const float cr = coeffScratch_[r];
+                const float* row = &L.basis[static_cast<std::size_t>(r) * nOut];
+                for (std::size_t n = 0; n < nOut; ++n)
+                    delta[n] += cr * row[n];
+            }
+
+            // split(flat, (C*C*k, C, C)) -> dW, db, dm, added onto the shared weights.
+            for (std::size_t t = 0; t < nW; ++t)
+                out.push_back(L.convW[t] + delta[t]);
+            for (int c = 0; c < C; ++c)
+                out.push_back(L.convB[c] + delta[nW + static_cast<std::size_t>(c)]);
+            for (int c = 0; c < C; ++c)
+                out.push_back(L.mixinW[c] + delta[nW + static_cast<std::size_t>(C + c)]);
         }
+        else
+        {
+            // gamma / beta = film(e); film_w is [2C, E] row-major, film_b is [2C].
+            // gamma = rows [0, C), beta = rows [C, 2C).
+            for (int c = 0; c < C; ++c)
+            {
+                const float* gRow = &L.filmW[static_cast<std::size_t>(c) * E];
+                const float* bRow = &L.filmW[static_cast<std::size_t>(C + c) * E];
+                float gamma = L.filmB[c];
+                float beta = L.filmB[C + c];
+                for (int jdx = 0; jdx < E; ++jdx)
+                {
+                    gamma += gRow[jdx] * e[jdx];
+                    beta += bRow[jdx] * e[jdx];
+                }
 
-        // conv.bias[c] = gamma*conv.bias[c] + beta
-        for (int c = 0; c < C; ++c)
-            out.push_back(gammaScratch_[c] * L.convB[c] + betaScratch_[c]);
+                // conv.weight[c] *= gamma  (layout [out=c][in][k], contiguous C*k block)
+                const float* convRow = &L.convW[static_cast<std::size_t>(c) * C * k];
+                for (int t = 0; t < C * k; ++t)
+                    out.push_back(convRow[t] * gamma);
+                // (conv bias and mixin need gamma/beta too — recomputed below to keep
+                //  the stream in NAM order: all conv weights, then all conv biases.)
+                gammaScratch_[c] = gamma;
+                betaScratch_[c] = beta;
+            }
 
-        // mixin.weight[c] *= gamma  (layout [out=c][in=1])
-        for (int c = 0; c < C; ++c)
-            out.push_back(L.mixinW[c] * gammaScratch_[c]);
+            // conv.bias[c] = gamma*conv.bias[c] + beta
+            for (int c = 0; c < C; ++c)
+                out.push_back(gammaScratch_[c] * L.convB[c] + betaScratch_[c]);
+
+            // mixin.weight[c] *= gamma  (layout [out=c][in=1])
+            for (int c = 0; c < C; ++c)
+                out.push_back(L.mixinW[c] * gammaScratch_[c]);
+        }
 
         // layer1x1 (unchanged): weight [out][in], then bias [out]
         out.insert(out.end(), L.x1W.begin(), L.x1W.end());
@@ -269,6 +356,11 @@ void MorphModel::buildDsp(const std::vector<float>& e, double sampleRate, int ma
 {
     gammaScratch_.assign(channels_, 0.0f);
     betaScratch_.assign(channels_, 0.0f);
+    if (archType_ == ArchType::Delta)
+    {
+        coeffScratch_.assign(deltaRank_, 0.0f);
+        deltaScratch_.assign(maxDeltaOut_, 0.0f);
+    }
 
     foldEmbedding(e, scratchWeights_);
 
@@ -294,6 +386,15 @@ void MorphModel::setEmbedding(const std::vector<float>& e)
         return; // no live generic WaveNet to re-weight
     foldEmbedding(e, scratchWeights_);
     wavenet_->set_weights_(scratchWeights_);
+}
+
+void MorphModel::setWeights(std::vector<float>& namWeights)
+{
+    if (wavenet_ == nullptr)
+        return; // no live generic WaveNet to re-weight
+    if (namWeights.size() != namWeightCount())
+        return; // caller handed us a stream for a different architecture
+    wavenet_->set_weights_(namWeights);
 }
 
 void MorphModel::process(NAM_SAMPLE* in, NAM_SAMPLE* out, int numFrames)

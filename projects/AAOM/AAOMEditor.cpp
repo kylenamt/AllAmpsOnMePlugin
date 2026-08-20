@@ -20,6 +20,7 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
 : juce::AudioProcessorEditor(processor)
 , proc_(processor)
 , library_(processor)
+, cabToggle_(pid::cabOn, processor.getParameterManager().getAPVTS())
 , eqBass_(pid::eqBass, processor.getParameterManager().getAPVTS())
 , eqMid_(pid::eqMid, processor.getParameterManager().getAPVTS())
 , eqTreble_(pid::eqTreble, processor.getParameterManager().getAPVTS())
@@ -43,6 +44,27 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
     addAndMakeVisible(presetChip_);
     // Populated by refreshModelChip() below — it refreshes the corner slots too,
     // so it has to run after those are constructed.
+
+    // Cab IR strip: the chip names the loaded impulse response and opens the
+    // load menu; its tooltip carries the detail (length, rate, partitioning),
+    // and the switch beside it is the automatable Cab parameter.
+    styleSideLabel(cabLabel_, "CAB");
+    addAndMakeVisible(cabLabel_);
+
+    cabChip_.setCaretShown(true);
+    cabChip_.setInterceptsMouseClicks(true, false);
+    cabChip_.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    cabChip_.onClick = [this] { showCabMenu(); };
+    addAndMakeVisible(cabChip_);
+    refreshCabChip();
+
+    cabToggle_.setComponentID("pill");
+    cabToggle_.setColour(juce::TextButton::buttonColourId, palette::panelTop);
+    cabToggle_.setColour(juce::TextButton::buttonOnColourId, palette::accentHardware);
+    cabToggle_.setColour(juce::TextButton::textColourOffId, palette::textDim);
+    cabToggle_.setColour(juce::TextButton::textColourOnId, palette::textEngravedDeep);
+    cabToggle_.setTooltip("Switch the cabinet IR in and out of the chain.");
+    addAndMakeVisible(cabToggle_);
 
     for (auto* slider : {&eqBass_, &eqMid_, &eqTreble_, &eqPresence_})
     {
@@ -101,10 +123,10 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
     refreshModelChip();
 
     setResizable(true, true);
-    setResizeLimits(480, 448, 960, 896);
+    setResizeLimits(480, 483, 960, 966);
     if (auto* constrainer = getConstrainer())
-        constrainer->setFixedAspectRatio(620.0 / 578.0);
-    setSize(620, 578);
+        constrainer->setFixedAspectRatio(620.0 / 624.0);
+    setSize(620, 624);
     startTimerHz(30);
 }
 
@@ -135,6 +157,10 @@ void AAOMEditor::timerCallback()
     // The model can also change outside the menu (e.g. session restore).
     if (proc_.modelGeneration() != lastModelGen_)
         refreshModelChip();
+
+    // Same for the cab IR: a restored session loads one behind the UI's back.
+    if (proc_.irGeneration() != lastIrGen_)
+        refreshCabChip();
 }
 
 void AAOMEditor::refreshModelChip()
@@ -262,6 +288,99 @@ void AAOMEditor::loadModel(const juce::File& file)
     // The live model is untouched on failure, so this is purely informational.
     juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "Model not loaded",
                                                 message, this);
+}
+
+void AAOMEditor::refreshCabChip()
+{
+    lastIrGen_ = proc_.irGeneration();
+
+    const bool loaded = proc_.irLoaded();
+    cabChip_.setText(loaded ? proc_.irDisplayName().toUpperCase() : juce::String("NO CAB IR"));
+    cabChip_.setTextColour(loaded ? palette::lcdGreenText : palette::textFaint);
+
+    juce::String tip = proc_.irStatus();
+    if (tip.isNotEmpty())
+        tip << "\n\n";
+    tip << "Click to load a cabinet impulse response.";
+    cabChip_.setTooltip(tip);
+}
+
+void AAOMEditor::showCabMenu()
+{
+    const juce::StringArray recents = proc_.recentIrFiles();
+    const juce::File current = proc_.irFile();
+
+    // IDs: 2 = browse, 3 = clear recents, 4 = unload, 100+n = recents[n].
+    juce::PopupMenu menu;
+    menu.addItem(2, "Load IR...");
+    menu.addItem(4, "Remove cab IR", proc_.irLoaded(), false);
+
+    if (!recents.isEmpty())
+    {
+        menu.addSeparator();
+        menu.addSectionHeader("Recent");
+        for (int i = 0; i < recents.size(); ++i)
+        {
+            const juce::File f{recents[i]};
+            // Missing files stay listed but greyed out, so a moved IR is visible
+            // rather than silently vanishing from the menu.
+            menu.addItem(100 + i, f.getFileNameWithoutExtension(), f.existsAsFile(), f == current);
+        }
+        menu.addSeparator();
+        menu.addItem(3, "Clear recent list");
+    }
+
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(cabChip_), [this, recents](int result) {
+        if (result == 0)
+            return;
+        if (result == 2)
+        {
+            browseForIr();
+        }
+        else if (result == 3)
+        {
+            proc_.clearRecentIrFiles();
+        }
+        else if (result == 4)
+        {
+            proc_.clearIr();
+            refreshCabChip();
+        }
+        else if (result >= 100 && result - 100 < recents.size())
+        {
+            loadIr(juce::File{recents[result - 100]});
+        }
+    });
+}
+
+void AAOMEditor::browseForIr()
+{
+    const juce::File start = proc_.irLoaded()
+                                 ? proc_.irFile().getParentDirectory()
+                                 : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+
+    chooser_ = std::make_unique<juce::FileChooser>("Load a cabinet impulse response", start,
+                                                   "*.wav;*.aif;*.aiff");
+    chooser_->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this](const juce::FileChooser& fc) {
+                              const juce::File file = fc.getResult();
+                              if (file != juce::File{})
+                                  loadIr(file);
+                          });
+}
+
+void AAOMEditor::loadIr(const juce::File& file)
+{
+    juce::String message;
+    if (proc_.loadIrFromFile(file, message))
+    {
+        refreshCabChip();
+        return;
+    }
+
+    // The loaded cab is untouched on failure, so this is purely informational.
+    juce::NativeMessageBox::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon, "IR not loaded", message,
+                                                this);
 }
 
 void AAOMEditor::refreshCorners()
@@ -410,13 +529,18 @@ void AAOMEditor::paint(juce::Graphics& g)
     g.drawText("MORPH", titleBounds_.withX(titleBounds_.getX() + w1).toNearestInt(),
               juce::Justification::centredLeft, false);
 
-    // Bottom strip panel + divider.
-    juce::ColourGradient stripGrad(panelTop, bottomStripBounds_.getX(), bottomStripBounds_.getY(), panelBottom,
-                                   bottomStripBounds_.getX(), bottomStripBounds_.getBottom(), false);
-    g.setGradientFill(stripGrad);
-    g.fillRoundedRectangle(bottomStripBounds_, 10.0f * scale);
-    g.setColour(inkBorder);
-    g.drawRoundedRectangle(bottomStripBounds_.reduced(0.5f), 10.0f * scale, 1.0f);
+    // Cab IR strip + bottom strip panels (same recessed panel treatment).
+    auto drawPanel = [&g, scale](const juce::Rectangle<float>& bounds, float radius) {
+        juce::ColourGradient grad(panelTop, bounds.getX(), bounds.getY(), panelBottom, bounds.getX(),
+                                  bounds.getBottom(), false);
+        g.setGradientFill(grad);
+        g.fillRoundedRectangle(bounds, radius * scale);
+        g.setColour(inkBorder);
+        g.drawRoundedRectangle(bounds.reduced(0.5f), radius * scale, 1.0f);
+    };
+
+    drawPanel(cabStripBounds_, 8.0f);
+    drawPanel(bottomStripBounds_, 10.0f);
     g.drawVerticalLine(bottomStripDividerX_, bottomStripBounds_.getY() + 12.0f * scale,
                        bottomStripBounds_.getBottom() - 12.0f * scale);
 }
@@ -441,6 +565,19 @@ void AAOMEditor::resized()
     auto bottomStrip = r.removeFromBottom(s(136));
     bottomStripBounds_ = bottomStrip.toFloat();
     r.removeFromBottom(s(14));
+
+    // Cab IR strip: label | chip | on-off switch, between the pad and the EQ.
+    auto cabStrip = r.removeFromBottom(s(34));
+    cabStripBounds_ = cabStrip.toFloat();
+    r.removeFromBottom(s(12));
+    {
+        auto row = cabStrip.reduced(s(10), s(6));
+        cabLabel_.setBounds(row.removeFromLeft(s(30)));
+        row.removeFromLeft(s(6));
+        cabToggle_.setBounds(row.removeFromRight(s(52)));
+        row.removeFromRight(s(8));
+        cabChip_.setBounds(row);
+    }
 
     // Middle row: left corner column / CRT pad (flex) / right corner column.
     const int colW = s(138);

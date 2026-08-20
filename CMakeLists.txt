@@ -66,6 +66,8 @@ set(dsp_source "${CMAKE_CURRENT_SOURCE_DIR}/projects/DSP")
 # derived from the file names and are wired up in AAOMProcessor's built-in
 # table, which also decides which one is the default.
 juce_add_binary_data(amp_morph_bundle SOURCES
+    "${aaom_source}/assets/delta_a2/delta_a2_bundle.json"
+    "${aaom_source}/assets/delta_a2/delta_a2_profiles.json"
     "${aaom_source}/assets/nam_a2_256/nam_a2_256_bundle.json"
     "${aaom_source}/assets/nam_a2_256/nam_a2_256_profiles.json"
     "${aaom_source}/assets/wavenet_a2/bundle.json"
@@ -87,6 +89,7 @@ add_plugin(amp_morph
         ${aaom_source}/gui/AAOMLookAndFeel.cpp
         ${aaom_source}/dsp/MorphModel.cpp
         ${aaom_source}/dsp/MorphEngine.cpp
+        ${aaom_source}/dsp/FftConvolver.cpp
         ${dsp_source}/Biquad.cpp
         ${dsp_source}/ParametricEQ.cpp
         ${nam_core_sources}

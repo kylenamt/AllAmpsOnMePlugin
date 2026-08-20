@@ -44,6 +44,12 @@ private:
     void loadModel(const juce::File& file);
     void refreshModelChip();
 
+    // Cabinet IR (the LCD chip in the strip below the morph pad).
+    void showCabMenu();
+    void browseForIr();
+    void loadIr(const juce::File& file);
+    void refreshCabChip();
+
     AAOMProcessor& proc_;
 
     AAOMLookAndFeel lookAndFeel_;
@@ -55,6 +61,11 @@ private:
 
     juce::Label subtitle_;
     LcdReadout presetChip_;
+
+    // Cab IR strip: engraved label, chip (name + load menu), on/off switch.
+    juce::Label cabLabel_;
+    LcdReadout cabChip_;
+    mrta::ParameterButton cabToggle_;
 
     mrta::ParameterSlider eqBass_;
     mrta::ParameterSlider eqMid_;
@@ -72,10 +83,12 @@ private:
     // Bounds cached in resized(), drawn in paint().
     juce::Rectangle<float> titleBounds_;
     juce::Rectangle<float> bottomStripBounds_;
+    juce::Rectangle<float> cabStripBounds_;
     int bottomStripDividerX_ = 0;
 
     int lastCornerGen_ = -1;
     int lastModelGen_ = -1;
+    int lastIrGen_ = -1;
 
     // Kept alive for the duration of the async native file dialog.
     std::unique_ptr<juce::FileChooser> chooser_;

@@ -43,7 +43,7 @@ NAM_SRCS=$(ls "$NAM_DIR"/NAM/*.cpp "$NAM_DIR"/NAM/wavenet/*.cpp | grep -v 'a2_fa
 # _USE_MATH_DEFINES so M_PI resolves under MinGW/MSYS too, not just glibc.
 g++ -std=c++20 -O2 -DNAM_SAMPLE_FLOAT -D_USE_MATH_DEFINES \
     -I projects/AAOM/dsp -I "$NAM_DIR" -I "$NAM_DIR/Dependencies/nlohmann" -I "$EIGEN" \
-    tools/selftest.cpp projects/AAOM/dsp/MorphModel.cpp projects/AAOM/dsp/MorphEngine.cpp \
+    tools/selftest.cpp projects/AAOM/dsp/MorphModel.cpp projects/AAOM/dsp/MorphEngine.cpp projects/AAOM/dsp/FftConvolver.cpp \
     $NAM_SRCS \
     -o "$OUT"
 

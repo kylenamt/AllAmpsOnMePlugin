@@ -2,11 +2,14 @@
 #include "AAOMEditor.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <iterator>
 #include <map>
 #include <utility>
+
+#include <juce_audio_formats/juce_audio_formats.h>
 
 #include <BinaryData.h>
 
@@ -35,6 +38,11 @@ struct BuiltInModel
 };
 
 const BuiltInModel kBuiltInModels[] = {
+    // delta_wavenet_a2: the embedding writes a low-rank residual onto the conv
+    // weights instead of scaling their output. E=512, rank 32, val_esr 0.037 --
+    // less than half nam_a2_256's. First in the list, so it is the default.
+    {"delta_a2", "Delta A2 512", BinaryData::delta_a2_bundle_json, BinaryData::delta_a2_bundle_jsonSize,
+     BinaryData::delta_a2_profiles_json, BinaryData::delta_a2_profiles_jsonSize},
     // Newer A2 run: 256-dim embeddings, lower val_esr than wavenet_a2.
     {"nam_a2_256", "NAM A2 256", BinaryData::nam_a2_256_bundle_json, BinaryData::nam_a2_256_bundle_jsonSize,
      BinaryData::nam_a2_256_profiles_json, BinaryData::nam_a2_256_profiles_jsonSize},
@@ -86,10 +94,20 @@ std::vector<CornerInfo> parseCatalogue(const juce::String& text, int modelDim, c
         return out;
 
     const juce::var root = juce::JSON::parse(text);
-    if (!root.isArray())
-        return out;
 
-    for (const juce::var& entry : *root.getArray())
+    // A catalogue is an array of profiles, but a single exported profile is a bare
+    // object (that is what the paste path emits), so accept both rather than
+    // silently yielding an empty Load menu.
+    juce::Array<juce::var> single;
+    if (!root.isArray())
+    {
+        if (!root.isObject())
+            return out;
+        single.add(root);
+    }
+    const juce::Array<juce::var>& entries = root.isArray() ? *root.getArray() : single;
+
+    for (const juce::var& entry : entries)
     {
         if (!entry.isObject() || !entry.hasProperty("aaom_profile"))
             continue;
@@ -120,6 +138,48 @@ std::vector<CornerInfo> parseCatalogue(const juce::String& text, int modelDim, c
               [](const CornerInfo& a, const CornerInfo& b) { return a.name.compareIgnoreCase(b.name) < 0; });
     return out;
 }
+
+// Read an impulse response file into mono floats. A multi-channel file keeps
+// channel 0 rather than being summed: IR packs routinely put several mic
+// positions in one file, and summing those comb-filters them.
+bool readIrFile(const juce::File& file, std::vector<float>& samples, double& rate, int& numChannels,
+                bool& truncated, juce::String& message)
+{
+    juce::AudioFormatManager formats;
+    formats.registerBasicFormats(); // WAV + AIFF in this build
+
+    std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
+    if (reader == nullptr)
+    {
+        message = "Not an audio file this build can read: " + file.getFileName();
+        return false;
+    }
+
+    rate = reader->sampleRate > 0.0 ? reader->sampleRate : Resampler48k::kModelRate;
+    numChannels = static_cast<int>(reader->numChannels);
+
+    // Cap at load time, in the file's own time base, so a long file never costs
+    // more than the length cap in memory either.
+    const juce::int64 maxRead = static_cast<juce::int64>(AAOMProcessor::kMaxIrSeconds * rate) + 1;
+    const int numToRead = static_cast<int>(juce::jmin(reader->lengthInSamples, maxRead));
+    truncated = reader->lengthInSamples > maxRead;
+    if (numToRead <= 0)
+    {
+        message = "Impulse response is empty: " + file.getFileName();
+        return false;
+    }
+
+    juce::AudioBuffer<float> buffer(1, numToRead);
+    if (!reader->read(&buffer, 0, numToRead, 0, true, false)) // reader channel 0
+    {
+        message = "Could not read samples from " + file.getFileName();
+        return false;
+    }
+
+    const float* src = buffer.getReadPointer(0);
+    samples.assign(src, src + numToRead);
+    return true;
+}
 } // namespace
 
 int AAOMProcessor::numBuiltInModels()
@@ -149,6 +209,9 @@ static std::vector<mrta::ParameterInfo> makeParameters()
         {pid::eqMid, "Mid", "dB", 0.0f, -12.0f, 12.0f, kEqStepDb, 1.0f},
         {pid::eqTreble, "Treble", "dB", 0.0f, -12.0f, 12.0f, kEqStepDb, 1.0f},
         {pid::eqPresence, "Presence", "dB", 0.0f, -12.0f, 12.0f, kEqStepDb, 1.0f},
+        // Cabinet IR on/off. Automatable so the cab can be switched out for a
+        // DI-style part without unloading the file.
+        {pid::cabOn, "Cab", "Off", "On", true},
     };
 }
 
@@ -190,6 +253,8 @@ AAOMProcessor::AAOMProcessor()
     registerParameterCallback(pid::eqMid, [this](float v, bool) { eq_.setBandGain(EqMid, v); });
     registerParameterCallback(pid::eqTreble, [this](float v, bool) { eq_.setBandGain(EqTreble, v); });
     registerParameterCallback(pid::eqPresence, [this](float v, bool) { eq_.setBandGain(EqPresence, v); });
+
+    registerParameterCallback(pid::cabOn, [this](float v, bool) { cabOn_.store(v > 0.5f); });
 
     // Loads the model and, on success, seeds the catalogue and corners from it.
     loadBundle();
@@ -250,7 +315,7 @@ bool AAOMProcessor::loadModelFromFile(const juce::File& file, juce::String& mess
     if (!applyBundle(text, file, -1, message))
         return false;
 
-    noteRecentModel(file); // applyBundle owns modelWarning_
+    noteRecentFile("recentModels", file); // applyBundle owns modelWarning_
     return true;
 }
 
@@ -365,7 +430,7 @@ juce::PropertiesFile* AAOMProcessor::settings()
     return appProps_->getUserSettings();
 }
 
-juce::StringArray AAOMProcessor::recentModelFiles() const
+juce::StringArray AAOMProcessor::recentFiles(const juce::String& key) const
 {
     // The properties file is lazily created; reading recents is logically const.
     auto* props = const_cast<AAOMProcessor*>(this)->settings();
@@ -373,20 +438,18 @@ juce::StringArray AAOMProcessor::recentModelFiles() const
         return {};
 
     juce::StringArray recents;
-    recents.addLines(props->getValue("recentModels"));
+    recents.addLines(props->getValue(key));
     recents.removeEmptyStrings();
     return recents;
 }
 
-void AAOMProcessor::noteRecentModel(const juce::File& file)
+void AAOMProcessor::noteRecentFile(const juce::String& key, const juce::File& file)
 {
     auto* props = settings();
     if (props == nullptr)
         return;
 
-    juce::StringArray recents;
-    recents.addLines(props->getValue("recentModels"));
-    recents.removeEmptyStrings();
+    juce::StringArray recents = recentFiles(key);
 
     // Most recent first, no duplicates, bounded length.
     recents.removeString(file.getFullPathName());
@@ -394,8 +457,13 @@ void AAOMProcessor::noteRecentModel(const juce::File& file)
     while (recents.size() > kMaxRecentModels)
         recents.remove(recents.size() - 1);
 
-    props->setValue("recentModels", recents.joinIntoString("\n"));
+    props->setValue(key, recents.joinIntoString("\n"));
     props->saveIfNeeded();
+}
+
+juce::StringArray AAOMProcessor::recentModelFiles() const
+{
+    return recentFiles("recentModels");
 }
 
 void AAOMProcessor::clearRecentModelFiles()
@@ -405,6 +473,173 @@ void AAOMProcessor::clearRecentModelFiles()
         props->removeValue("recentModels");
         props->saveIfNeeded();
     }
+}
+
+juce::StringArray AAOMProcessor::recentIrFiles() const
+{
+    return recentFiles("recentIrs");
+}
+
+void AAOMProcessor::clearRecentIrFiles()
+{
+    if (auto* props = settings())
+    {
+        props->removeValue("recentIrs");
+        props->saveIfNeeded();
+    }
+}
+
+//==============================================================================
+// Cabinet IR
+
+juce::String AAOMProcessor::irDisplayName() const
+{
+    return irLoaded() ? irFile_.getFileNameWithoutExtension() : juce::String{};
+}
+
+bool AAOMProcessor::loadIrFromFile(const juce::File& file, juce::String& message)
+{
+    if (!file.existsAsFile())
+    {
+        message = "File not found: " + file.getFullPathName();
+        return false;
+    }
+
+    // Decode before touching anything live: a file that turns out to be
+    // unreadable has to leave the current cab exactly where it was.
+    std::vector<float> samples;
+    double rate = 0.0;
+    int channels = 0;
+    bool truncated = false;
+    if (!readIrFile(file, samples, rate, channels, truncated, message))
+        return false;
+
+    float peak = 0.0f;
+    for (float s : samples)
+        peak = juce::jmax(peak, std::abs(s));
+    if (peak <= 0.0f)
+    {
+        message = "Impulse response is silent: " + file.getFileName();
+        return false;
+    }
+
+    // Conditioning allocates (resampling, then a spectrum per partition), so the
+    // swap happens with audio suspended, the same way a model swap does.
+    suspendProcessing(true);
+    {
+        const juce::ScopedLock sl(getCallbackLock());
+        irSource_ = std::move(samples);
+        irSourceRate_ = rate;
+        irSourceChannels_ = channels;
+        irTruncated_ = truncated;
+        irFile_ = file;
+        rebuildConvolver();
+    }
+    suspendProcessing(false);
+
+    noteRecentFile("recentIrs", file);
+    irGen_.fetch_add(1);
+    message = irStatus_;
+    return true;
+}
+
+void AAOMProcessor::clearIr()
+{
+    suspendProcessing(true);
+    {
+        const juce::ScopedLock sl(getCallbackLock());
+        irSource_.clear();
+        irSourceRate_ = 0.0;
+        irSourceChannels_ = 0;
+        irTruncated_ = false;
+        irFile_ = juce::File{};
+        irStatus_.clear();
+        cab_.clear();
+    }
+    suspendProcessing(false);
+
+    irGen_.fetch_add(1);
+}
+
+void AAOMProcessor::rebuildConvolver()
+{
+    if (irSource_.empty() || currentSampleRate_ <= 0.0)
+    {
+        cab_.clear(); // nothing loaded, or no rate yet — prepare() will be back
+        return;
+    }
+
+    // 1. To the host rate. Cubic Lagrange, run once per load or rate change;
+    //    like Resampler48k it does not anti-alias, which a cabinet IR (already
+    //    rolled off far below Nyquist) does not miss.
+    std::vector<float> ir;
+    if (std::abs(irSourceRate_ - currentSampleRate_) < 1.0)
+    {
+        ir = irSource_;
+    }
+    else
+    {
+        const double ratio = irSourceRate_ / currentSampleRate_;
+        const int numOut = juce::jmax(1, static_cast<int>(std::ceil(irSource_.size() / ratio)));
+
+        // The interpolator reads a few samples past the ones it consumes; pad
+        // rather than let it run off the end of the source.
+        std::vector<float> padded(irSource_);
+        padded.resize(irSource_.size() + static_cast<std::size_t>(std::ceil(ratio)) + 8, 0.0f);
+
+        ir.assign(static_cast<std::size_t>(numOut), 0.0f);
+        juce::LagrangeInterpolator interpolator;
+        interpolator.process(ratio, padded.data(), ir.data(), numOut);
+    }
+
+    // 2. Cap the length, then drop the trailing noise floor: samples past the
+    //    last one above -80 dB of the peak add nothing audible but cost a whole
+    //    partition each. Leading samples stay as they are — a pre-delay baked
+    //    into the file is part of the sound the user picked.
+    const int maxLength = static_cast<int>(kMaxIrSeconds * currentSampleRate_);
+    if (static_cast<int>(ir.size()) > maxLength)
+        ir.resize(static_cast<std::size_t>(maxLength));
+
+    float peak = 0.0f;
+    for (float s : ir)
+        peak = juce::jmax(peak, std::abs(s));
+    if (peak <= 0.0f)
+    {
+        cab_.clear();
+        irStatus_ = "Impulse response is silent: " + irFile_.getFileName();
+        return;
+    }
+
+    const float noiseFloor = peak * 1.0e-4f; // -80 dB relative to the peak
+    int end = static_cast<int>(ir.size());
+    while (end > 1 && std::abs(ir[static_cast<std::size_t>(end - 1)]) < noiseFloor)
+        --end;
+    ir.resize(static_cast<std::size_t>(end));
+
+    // 3. Normalise to unit energy so swapping cabs does not swing the level:
+    //    for broadband input the convolution then leaves RMS where it found it.
+    double energy = 0.0;
+    for (float s : ir)
+        energy += static_cast<double>(s) * static_cast<double>(s);
+    const float scale = static_cast<float>(1.0 / std::sqrt(energy));
+    for (float& s : ir)
+        s *= scale;
+
+    cab_.setImpulseResponse(ir.data(), static_cast<int>(ir.size()));
+    cabWasOn_ = cabOn_.load(); // fresh state, nothing stale to flush
+
+    juce::String status;
+    status << "Cab IR: " << irFile_.getFileName();
+    status << "\n" << juce::String(cab_.irLength()) << " taps @ " << juce::String(currentSampleRate_, 0) << " Hz";
+    status << " (source " << juce::String(irSourceRate_, 0) << " Hz";
+    if (irSourceChannels_ > 1)
+        status << ", " << juce::String(irSourceChannels_) << " ch, using ch 1";
+    status << ")";
+    if (irTruncated_)
+        status << "\nFile is longer than " + juce::String(kMaxIrSeconds, 1) + " s and was cut to fit.";
+    status << "\nFFT convolution: " << juce::String(cab_.partitionSize()) << "-tap head + "
+           << juce::String(cab_.numPartitions()) << " partition(s), no added latency";
+    irStatus_ = status;
 }
 
 juce::String AAOMProcessor::catalogueTextFor(const juce::File& source, int builtInIndex) const
@@ -619,6 +854,10 @@ void AAOMProcessor::prepare(double sampleRate, int maxBufferSize)
     // Seed the engine's corners directly (audio thread not running yet), then
     // build the DSP at the current morph position.
     rebuildEngine();
+
+    // The cab IR is stored as the file gave it to us, so a rate change (or a
+    // session restored before prepare()) re-conditions it here.
+    rebuildConvolver();
 }
 
 void AAOMProcessor::process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -657,6 +896,18 @@ void AAOMProcessor::process(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
     float* eqBuf = mono_.data();
     eq_.process(&eqBuf, &eqBuf, 1, static_cast<unsigned int>(n));
 
+    // Cabinet IR last in the chain (model -> tone -> cab), by FFT convolution.
+    const bool cabOn = cabOn_.load();
+    if (cabOn && cab_.ready())
+    {
+        // Coming back from bypass the delay lines still hold whatever was
+        // playing when it was switched out; start clean instead of replaying it.
+        if (!cabWasOn_)
+            cab_.resetState();
+        cab_.process(mono_.data(), mono_.data(), n);
+    }
+    cabWasOn_ = cabOn;
+
     for (int i = 0; i < n; ++i)
     {
         const float v = mono_[static_cast<std::size_t>(i)] * outputGain_.getNextValue();
@@ -673,6 +924,13 @@ void AAOMProcessor::getStateInformation(juce::MemoryBlock& destData)
     juce::ValueTree state = getParameterManager().getAPVTS().copyState();
     state.removeChild(state.getChildWithName("AAOM_CORNERS"), nullptr);
     state.removeChild(state.getChildWithName("AAOM_MODEL"), nullptr);
+    state.removeChild(state.getChildWithName("AAOM_IR"), nullptr);
+
+    // Cab IR: the path only. IR files are big and shared between sessions, so
+    // embedding the samples would bloat every save for no benefit.
+    juce::ValueTree irNode{"AAOM_IR"};
+    irNode.setProperty("path", irLoaded() ? irFile_.getFullPathName() : juce::String{}, nullptr);
+    state.addChild(irNode, -1, nullptr);
 
     // Model identity: either the id of a compiled-in model or the path it was
     // loaded from, plus the run sha8 it had when saved so a reload can tell
@@ -763,6 +1021,28 @@ void AAOMProcessor::setStateInformation(const void* data, int sizeInBytes)
             const juce::String carried = modelWarning_;
             loadBuiltInModel(index);
             modelWarning_ = carried; // loadBuiltInModel clears it on success
+        }
+    }
+
+    // Cab IR: only the path travels in the session, so a file that has moved
+    // just means no cab — never a failed restore. Reloading is skipped when the
+    // same file is already live, which keeps preset switching off the disk.
+    const juce::ValueTree irNode = state.getChildWithName("AAOM_IR");
+    const juce::String savedIr =
+        irNode.isValid() ? irNode.getProperty("path", juce::var()).toString() : juce::String{};
+    if (savedIr.isEmpty())
+    {
+        if (irLoaded())
+            clearIr();
+    }
+    else if (!irLoaded() || irFile_.getFullPathName() != savedIr)
+    {
+        juce::String irMessage;
+        if (!loadIrFromFile(juce::File{savedIr}, irMessage))
+        {
+            clearIr();
+            irStatus_ = "Cab IR from the session could not be loaded: " + irMessage;
+            irGen_.fetch_add(1);
         }
     }
 

@@ -9,6 +9,7 @@ four amp or pedal captures in real time on a 2D XY pad.
 
 - Four-corner morphing with live bilinear blending
 - Pasteable profile slots with search and filtering
+- Cabinet IR loader (WAV), zero-latency FFT convolution
 - APVTS-backed controls for morph, gain, and EQ
 - JUCE + CMake project with VST3, AU, and Standalone builds
 

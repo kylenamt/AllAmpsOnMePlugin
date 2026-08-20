@@ -3,11 +3,26 @@
 // MorphEngine — the real-time morph layer on top of MorphModel (JUCE-free).
 //
 // Holds up to 4 "corner" embeddings arranged on a 2D XY pad. A dot at (x,y) in
-// [0,1]^2 bilinearly blends the assigned corners into a target embedding; the
-// current embedding one-pole smooths toward the target so drags stay click-free
-// (gamma/beta are continuous in the embedding). Whenever the smoothed embedding
-// moves, the folded weights are re-derived and hot-swapped on the live NAM
-// WaveNet. All per-block work is preallocated and allocation-free.
+// [0,1]^2 bilinearly blends the assigned corners; the result is hot-swapped onto
+// the live NAM WaveNet. All per-block work is preallocated and allocation-free.
+//
+// The blend happens in *weight* space, not embedding space. MorphModel's fold is
+// affine in the embedding (FiLM: gamma(e) is affine and scales W; delta: W+dW(e)
+// with dW affine), and affine maps commute with affine combinations, so for
+// bilinear weights w_i summing to 1:
+//
+//     fold( sum_i w_i * corner_i )  ==  sum_i w_i * fold(corner_i)     exactly
+//
+// So each corner is folded *once*, when it is assigned, and every block does a
+// 4-way weighted sum of the cached streams instead of a full fold. That is ~2x
+// cheaper than folding a blended embedding under FiLM, ~3x under delta, and --
+// the point -- costs the same for both, so the fold's per-architecture price is
+// paid at corner-assignment time rather than once per block of every drag.
+//
+// The one-pole smoother likewise runs in weight space. It is LTI and the blend
+// is linear, so smoothing the weights is identical to smoothing the embedding
+// and re-folding; it additionally smooths a *corner reassignment*, which an
+// embedding-space smoother would step through discontinuously.
 //
 // Threading: prepare() builds the DSP off the audio thread. setMorph() and
 // setCorner*/clearCorner may be called from the audio thread (e.g. from MRTA
@@ -62,27 +77,42 @@ public:
     // One-pole smoothing time constant for the embedding morph.
     void setSmoothingTimeMs(float ms);
 
-    // Process num_frames mono samples. Re-folds/hot-swaps weights first if the
-    // smoothed embedding has moved. in may equal out.
+    // Process num_frames mono samples. Re-blends/hot-swaps weights first if the
+    // dot or a corner has moved. in may equal out.
     void processBlock(NAM_SAMPLE* in, NAM_SAMPLE* out, int numFrames);
 
     // Reset DSP state (e.g. transport reset). Off the audio thread ideally.
     void reset();
 
 private:
-    void computeTarget();          // fills target_ from corners + (x_,y_)
-    void snapCurrentToTarget();     // current_ = target_
+    // Normalised bilinear weights over the *assigned* corners. False when nothing
+    // is assigned near the dot, in which case the caller holds its current weights.
+    bool computeBlendWeights(float (&w)[kNumCorners]) const;
+
+    // blendTarget_ = sum_i w[i] * foldedCorners_[i]; caches w into lastBlendW_.
+    void rebuildBlendTarget(const float (&w)[kNumCorners]);
+
+    void computeTarget();          // fills target_ from corners + (x_,y_); prepare() only
 
     std::unique_ptr<MorphModel> model_;
 
     std::array<std::vector<float>, kNumCorners> corners_;
     std::array<bool, kNumCorners> assigned_{{false, false, false, false}};
+    // Corner assigned/cleared but not yet re-folded. Drained one per block so a
+    // preset load (all four at once) cannot pile four folds into one callback.
+    std::array<bool, kNumCorners> cornerDirty_{{false, false, false, false}};
 
     CornerFifo cornerFifo_;
 
-    std::vector<float> target_;    // E
-    std::vector<float> current_;   // E (smoothed, what the weights reflect)
-    std::vector<float> lastFolded_;// E (embedding the live weights were folded from)
+    std::vector<float> target_;    // E; only prepare() needs the embedding itself
+
+    // Weight-space state, all namWeightCount() long and preallocated by setModel().
+    std::array<std::vector<float>, kNumCorners> foldedCorners_;
+    std::vector<float> blendTarget_;    // where the smoother is heading
+    std::vector<float> currentWeights_; // what the live WaveNet currently holds
+    float lastBlendW_[kNumCorners] = {0.0f, 0.0f, 0.0f, 0.0f};
+    bool blendValid_ = false; // lastBlendW_/blendTarget_ reflect the current corners
+    bool settled_ = true;     // currentWeights_ == blendTarget_, nothing to push
 
     float x_ = 0.5f;
     float y_ = 0.5f;
@@ -90,7 +120,6 @@ private:
     double sampleRate_ = 48000.0;
     int maxBlockSize_ = 0;
     float smoothCoeffPerBlock_ = 1.0f;
-    bool currentValid_ = false;
     bool prepared_ = false;
 };
 
