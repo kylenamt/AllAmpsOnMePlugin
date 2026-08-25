@@ -1,75 +1,78 @@
 #pragma once
 
+#include <array>
+
 #include <juce_graphics/juce_graphics.h>
 
 namespace aaom::palette
 {
 
-// Hardware theme design tokens, ported from the design handoff
-// (.claude/Audio plugin profile mixer/design_handoff_amp_morph). Brushed-metal
-// chassis, engraved nameplate, CRT morph screen, LED meters, LCD readouts.
+// "Morph field" design tokens, ported from the design handoff
+// (.claude/design_handoff_morph_pad). Dark cyan/graphite panel, recessed CRT-
+// style morph pad, flat corner-color mosaic, LCD-style status pill.
 
-// Chassis metal (top -> bottom gradient stops).
-inline const juce::Colour chassisTop{0xff454039};
-inline const juce::Colour chassisMid{0xff38332c};
-inline const juce::Colour chassisBottom{0xff2c2823};
-
-// Module / strip panels (top -> bottom gradient stops).
-inline const juce::Colour panelTop{0xff2c2822};
-inline const juce::Colour panelBottom{0xff211d18};
-inline const juce::Colour panelDeep{0xff1a1611};
-
-// Deep insets / near-black recesses.
-inline const juce::Colour inkBorder{0xff14110d};
-inline const juce::Colour inkTrack{0xff12100c};
-inline const juce::Colour inkLcdBottom{0xff0c0f0a};
-inline const juce::Colour inkBezel{0xff0a0806};
-
-// Screw metal (radial gradient stops).
-inline const juce::Colour screwLight{0xff9a9188};
-inline const juce::Colour screwDark{0xff3a352f};
-
-// Accent (amber/gold).
-inline const juce::Colour accent{0xffe8ab3d};
-inline const juce::Colour accentHardware{0xffc78a24};
-inline const juce::Colour accentBright{0xfff0c766};
-
-// LCD readouts.
-inline const juce::Colour lcdAmberText{0xffffcf7a};
-inline const juce::Colour lcdGreenText{0xffbfe27a};
-inline const juce::Colour lcdBgTop{0xff141a12};
+// Neutrals.
+inline const juce::Colour shell{0xff15181b};       // panel body, modal body
+inline const juce::Colour shellLightTop{0xff1c2024};    // raised cards, knob row (top stop)
+inline const juce::Colour shellLightBottom{0xff161a1d}; //   (bottom stop)
+inline const juce::Colour shellLeadTop{0xff1e2226};      // leading card, modal header (top stop)
+inline const juce::Colour shellLeadBottom{0xff171a1e};   //   (bottom stop)
+inline const juce::Colour recessDeep{0xff0b0d0f};  // pad well, search field
+inline const juce::Colour recess{0xff0d0f11};      // CAB bar, readout / status pill
+inline const juce::Colour recessBottom{0xff101316}; // status pill bottom stop
+inline const juce::Colour listBody{0xff0f1214};     // library list background
+inline const juce::Colour searchBarBg{0xff101315};  // library search bar background
+inline const juce::Colour emptyCardBg{0xff131619};  // unassigned corner card
+inline const juce::Colour listRowBg{0xff14181b};    // library row background
+inline const juce::Colour trackBg{0xff0c0e10};      // slider / weight-bar track
+inline const juce::Colour smallButtonBg{0xff0e1113}; // small icon buttons (search/clear/close)
+inline const juce::Colour page{0xff0a0b0c};         // area behind the plugin panel
 
 // Text.
-inline const juce::Colour textLight{0xffe8ddcb};
-inline const juce::Colour textName{0xffddd3c4};
-inline const juce::Colour textMuted{0xffa89a86};
-inline const juce::Colour textDim{0xff9a9188};
-inline const juce::Colour textFaint{0xff8a7f70};
-inline const juce::Colour textEngraved{0xff211d17};
-inline const juce::Colour textEngravedDeep{0xff1a1206};
+inline const juce::Colour textPrimary{0xffdbe3e5};
+inline const juce::Colour textValue{0xffc9d2d4};
+inline const juce::Colour textSecondary{0xff9fb0b2};
+inline const juce::Colour textLabel{0xff9aa6a8};
+inline const juce::Colour textMuted{0xff788688};
+inline const juce::Colour textDim{0xff7d8d8f};
+inline const juce::Colour textDim2{0xff7f8c8e};
+inline const juce::Colour textDim3{0xff6a7a7c};
+inline const juce::Colour textDisabled{0xff5d6a6c};
+inline const juce::Colour textDisabled2{0xff546264};
+inline const juce::Colour textDisabled3{0xff3f4c4e};
+inline const juce::Colour textIcon{0xff8e9a9c};
 
-// CLR / destructive (red).
-inline const juce::Colour clearTop{0xff813127};
-inline const juce::Colour clearBottom{0xff4a160f};
-inline const juce::Colour clearText{0xfff0cfc7};
+// Accents.
+inline const juce::Colour cyan{0xff2fbfc9};       // house accent
+inline const juce::Colour cyanLight{0xff8ceaf0};  // search text, selected row
+inline const juce::Colour cyanMid1{0xff1f9aa1};   // gradient stops
+inline const juce::Colour cyanMid2{0xff54d7de};
+inline const juce::Colour cyanMid3{0xff14757c};
 
-// CRT morph screen bezel + phosphor background.
-inline const juce::Colour crtBezelTop{0xff161310};
-inline const juce::Colour crtBezelBottom{0xff0c0a07};
-inline const juce::Colour crtScreenCentre{0xff1a1811};
-inline const juce::Colour crtScreenEdge{0xff0a0805};
+inline const juce::Colour cornerTL{0xffe8a13c}; // amber
+inline const juce::Colour cornerTR{0xff2fbfc9}; // cyan
+inline const juce::Colour cornerBL{0xff9b7bf0}; // violet
+inline const juce::Colour cornerBR{0xff8fd14f}; // lime
 
-// Knurled metal (knob body + puck ridges).
-inline const juce::Colour knurlLight{0xff4a453d};
-inline const juce::Colour knurlDark{0xff34302a};
-inline const juce::Colour knurlRim{0xff23201b};
-inline const juce::Colour puckCoreHi{0xfffff2d0};
-inline const juce::Colour puckCoreEdge{0xff8a5514};
+// Corner color by MorphEngine's weight order (0=BL, 1=BR, 2=TL, 3=TR) --
+// matches AmpSlotComponent/MorphPad/ProfileLibrary's shared indexing.
+inline juce::Colour cornerColour(int index)
+{
+    switch (index)
+    {
+        case 0: return cornerBL;
+        case 1: return cornerBR;
+        case 2: return cornerTL;
+        default: return cornerTR;
+    }
+}
 
-// Desk backdrop behind the chassis.
-inline const juce::Colour deskTop{0xff2c2114};
-inline const juce::Colour deskMid{0xff1a130c};
-inline const juce::Colour deskBottom{0xff120d07};
-inline const juce::Colour scrim{0xdd080604};
+// Negative (extrapolated) weight.
+inline const juce::Colour negativeText{0xffd98b7c};
+inline const juce::Colour negativeBarTop{0xffe39c8d};
+inline const juce::Colour negativeBarBottom{0xffa85d4d};
+
+// Modal scrim.
+inline const juce::Colour scrim{0xb8060809};
 
 } // namespace aaom::palette

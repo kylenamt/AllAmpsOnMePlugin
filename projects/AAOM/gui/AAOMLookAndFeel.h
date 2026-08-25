@@ -5,9 +5,10 @@
 namespace aaom
 {
 
-// Hardware theme: knurled rotary knobs, slotted vertical faders, brushed
-// push buttons (SELECT / CLR / chip / close, distinguished by component ID),
-// and an LCD-styled TextEditor for the profile library's search field.
+// "Morph field" theme: conic-arc rotary dials, flat horizontal sliders
+// (RANGE/SMOOTH), a pill on/off switch (CAB IR, keyed by component ID
+// "cabSwitch"), square icon buttons, and an LCD-styled TextEditor for the
+// profile library's search field.
 class AAOMLookAndFeel : public juce::LookAndFeel_V4
 {
 public:

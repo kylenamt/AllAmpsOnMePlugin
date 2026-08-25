@@ -7,24 +7,26 @@
 namespace aaom
 {
 
-// One corner module of the morph chassis: corner tag (TL/TR/BL/BR), amp name,
-// a segmented LED influence meter + percent readout, and SELECT / CLR
-// buttons. Right-click offers "Paste profile" (from the clipboard), which
-// has no equivalent button in the hardware mock but is preserved from the
-// previous UI since it's a real, working feature (paste an aaom_profile JSON
-// exported from the training pipeline).
+// One corner card in the right-hand column: corner tag (TL/TR/BL/BR), ⌕
+// (open the profile library for this slot) / × (clear) icon buttons, weight
+// percentage, profile name, and a magnitude weight bar. Right-click offers
+// "Paste profile" (from the clipboard) -- no equivalent in the design mock,
+// but preserved from the previous UI since it's a real, working feature
+// (paste an aaom_profile JSON exported from the training pipeline).
 class AmpSlotComponent : public juce::Component
 {
 public:
-    // alignRight: right-column modules (TR/BR) mirror their text alignment.
-    AmpSlotComponent(int index, bool alignRight);
+    explicit AmpSlotComponent(int index);
 
     std::function<void(int)> onSelect; // opens the Profile Library for this slot
     std::function<void(int)> onClear;
     std::function<void(int)> onPaste;
 
     void setContents(bool assigned, const juce::String& name);
-    void setWeight(float weight01); // live bilinear influence, updated every frame
+    // Raw bilinear weight (unclamped -- can exceed +/-1 under extrapolation).
+    void setWeight(float weight);
+    // True when this corner has the highest weight of the 4, right now.
+    void setLeading(bool leading);
 
     void resized() override;
     void paint(juce::Graphics&) override;
@@ -32,15 +34,16 @@ public:
 
 private:
     const int index_;
-    const bool alignRight_;
     const juce::String tag_;
+    const juce::Colour tagColour_;
 
     bool assigned_ = false;
+    bool leading_ = false;
     float weight_ = 0.0f;
 
     juce::Label name_;
-    juce::TextButton select_{"Select"};
-    juce::TextButton clear_{"Clr"};
+    juce::TextButton search_;
+    juce::TextButton clear_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(AmpSlotComponent)
 };

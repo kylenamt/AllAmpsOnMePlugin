@@ -34,13 +34,18 @@ inline std::vector<uint8_t> base64Decode(const std::string& in)
     int bits = 0;
     for (unsigned char c : in)
     {
+        // skip special character
         if (c == '=' || c == '\n' || c == '\r' || c == ' ' || c == '\t')
             continue;
+        // decode c
         const int8_t v = lut(c);
+
         if (v == kInvalid)
             throw std::runtime_error("base64Decode: invalid character in input");
+        // append the newly decoded character to the buffer
         buffer = (buffer << 6) | static_cast<uint32_t>(v);
         bits += 6;
+        // flush the buffer when enough bits for a byte
         if (bits >= 8)
         {
             bits -= 8;

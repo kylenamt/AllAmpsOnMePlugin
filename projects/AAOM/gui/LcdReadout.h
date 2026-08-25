@@ -7,12 +7,11 @@
 namespace aaom
 {
 
-// Small reusable "LCD" chip: dark recessed background, glowing mono text.
-// Used for the preset chip, the input/output gain readouts, and (indirectly,
-// via its colour scheme) anywhere else a phosphor-style readout is needed.
-// Inherits SettableTooltipClient so a chip can carry diagnostic info (e.g.
-// the preset chip surfaces the loaded model's stats/errors on hover, since
-// the hardware chassis has no room to show that text permanently).
+// The header's status pill: a small recessed chip with glowing mono text.
+// Currently used only for the model selector, but kept as its own component
+// (rather than folded into AAOMEditor) since it also carries a diagnostic
+// tooltip (the loaded model's stats, or the load error/warning) and a click
+// handler, both independent of the editor's own layout code.
 class LcdReadout : public juce::Component, public juce::SettableTooltipClient
 {
 public:
@@ -20,7 +19,6 @@ public:
 
     void setText(const juce::String& text);
     void setTextColour(juce::Colour colour);
-    void setCaretShown(bool shown); // small dropdown triangle at the left edge
 
     // Set to make the chip behave as a button (e.g. the model selector menu).
     // Only fires when the chip also intercepts mouse clicks.
@@ -32,7 +30,6 @@ public:
 private:
     juce::String text_;
     juce::Colour textColour_;
-    bool caret_ = false;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(LcdReadout)
 };

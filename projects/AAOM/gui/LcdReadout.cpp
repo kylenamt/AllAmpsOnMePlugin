@@ -5,7 +5,7 @@ namespace aaom
 {
 
 LcdReadout::LcdReadout()
-: textColour_(palette::lcdAmberText)
+: textColour_(palette::cyan)
 {
     setInterceptsMouseClicks(false, false);
 }
@@ -24,12 +24,6 @@ void LcdReadout::setTextColour(juce::Colour colour)
     repaint();
 }
 
-void LcdReadout::setCaretShown(bool shown)
-{
-    caret_ = shown;
-    repaint();
-}
-
 void LcdReadout::mouseDown(const juce::MouseEvent&)
 {
     if (onClick)
@@ -41,35 +35,19 @@ void LcdReadout::paint(juce::Graphics& g)
     using namespace palette;
     const auto bounds = getLocalBounds().toFloat();
 
-    juce::ColourGradient bg(lcdBgTop, bounds.getX(), bounds.getY(), inkLcdBottom, bounds.getX(), bounds.getBottom(),
+    juce::ColourGradient bg(recess, bounds.getX(), bounds.getY(), recessBottom, bounds.getX(), bounds.getBottom(),
                             false);
     g.setGradientFill(bg);
-    g.fillRoundedRectangle(bounds, 5.0f);
-    g.setColour(inkBezel);
-    g.drawRoundedRectangle(bounds.reduced(0.5f), 5.0f, 1.0f);
+    g.fillRoundedRectangle(bounds, 8.0f);
+    g.setColour(juce::Colours::black.withAlpha(0.9f));
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 8.0f, 1.0f);
 
-    auto textArea = bounds.reduced(8.0f, 0.0f);
-    if (caret_)
-    {
-        const float s = 5.0f;
-        juce::Path tri;
-        auto c = juce::Point<float>(textArea.getX() + s * 0.5f, bounds.getCentreY());
-        tri.addTriangle(c.x - s * 0.5f, c.y - s * 0.4f, c.x + s * 0.5f, c.y - s * 0.4f, c.x, c.y + s * 0.5f);
-        g.setColour(textColour_);
-        g.fillPath(tri);
-        textArea.removeFromLeft(s + 6.0f);
-    }
-
-    const auto font = juce::Font(juce::Font::getDefaultMonospacedFontName(), bounds.getHeight() * 0.52f,
-                                 juce::Font::plain);
-
-    // Cheap glow: a soft low-alpha pass behind the crisp text.
-    g.setColour(textColour_.withAlpha(0.35f));
-    g.setFont(font.withHeight(font.getHeight() * 1.06f));
-    g.drawText(text_, textArea, juce::Justification::centredLeft);
-
+    const auto textArea = bounds.reduced(13.0f, 0.0f);
+    // A scaled-up second pass (the "glow behind crisp text" trick used
+    // elsewhere) drifts out of alignment over a string this long and reads as
+    // ghosting, so this one draw call is deliberately the only pass.
     g.setColour(textColour_);
-    g.setFont(font);
+    g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.0f, juce::Font::plain));
     g.drawText(text_, textArea, juce::Justification::centredLeft);
 }
 

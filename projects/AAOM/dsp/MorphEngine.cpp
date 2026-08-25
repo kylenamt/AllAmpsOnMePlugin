@@ -95,8 +95,8 @@ void MorphEngine::queueClear(int index)
 
 void MorphEngine::setMorph(float x, float y)
 {
-    x_ = std::clamp(x, 0.0f, 1.0f);
-    y_ = std::clamp(y, 0.0f, 1.0f);
+    x_ = std::clamp(x, -1.0f, 2.0f);
+    y_ = std::clamp(y, -1.0f, 2.0f);
 }
 
 void MorphEngine::setSmoothingTimeMs(float ms)
@@ -116,9 +116,12 @@ void MorphEngine::setSmoothingTimeMs(float ms)
 bool MorphEngine::computeBlendWeights(float (&w)[kNumCorners]) const
 {
     // Bilinear weights over the 4 corners: bottom-left, bottom-right, top-left,
-    // top-right. Unassigned corners drop out and the rest renormalise, so the
-    // returned weights always sum to 1 -- which is what makes blending folded
-    // corners equal to folding the blended embedding.
+    // top-right. These four polynomials sum to 1 for any x,y (not just inside
+    // [0,1]), so a dot outside the corner square extrapolates -- some weights
+    // go negative -- rather than clamping to the nearest corner. Unassigned
+    // corners drop out and the rest renormalise, so the returned weights always
+    // sum to 1 -- which is what makes blending folded corners equal to folding
+    // the blended embedding.
     w[0] = (1.0f - x_) * (1.0f - y_);
     w[1] = x_ * (1.0f - y_);
     w[2] = (1.0f - x_) * y_;

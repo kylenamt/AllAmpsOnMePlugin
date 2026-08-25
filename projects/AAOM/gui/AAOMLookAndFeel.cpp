@@ -1,8 +1,6 @@
 #include "AAOMLookAndFeel.h"
 #include "Palette.h"
 
-#include <cmath>
-
 namespace aaom
 {
 
@@ -10,34 +8,37 @@ AAOMLookAndFeel::AAOMLookAndFeel()
 {
     using namespace palette;
 
-    setColour(juce::ResizableWindow::backgroundColourId, deskMid);
+    setColour(juce::ResizableWindow::backgroundColourId, page);
 
-    setColour(juce::Label::textColourId, textLight);
+    setColour(juce::Label::textColourId, textPrimary);
 
-    setColour(juce::Slider::textBoxTextColourId, lcdAmberText);
+    setColour(juce::Slider::textBoxTextColourId, textValue);
     setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
     setColour(juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
 
-    setColour(juce::TextButton::textColourOffId, textEngravedDeep);
-    setColour(juce::TextButton::textColourOnId, textEngravedDeep);
+    setColour(juce::TextButton::textColourOffId, textIcon);
+    setColour(juce::TextButton::textColourOnId, textIcon);
 
-    setColour(juce::ListBox::backgroundColourId, panelDeep);
-    setColour(juce::ListBox::textColourId, textLight);
-    setColour(juce::ListBox::outlineColourId, inkBorder);
+    setColour(juce::ListBox::backgroundColourId, listBody);
+    setColour(juce::ListBox::textColourId, textPrimary);
+    setColour(juce::ListBox::outlineColourId, juce::Colours::transparentBlack);
 
     setColour(juce::ScrollBar::backgroundColourId, juce::Colours::transparentBlack);
-    setColour(juce::ScrollBar::thumbColourId, accentHardware.withAlpha(0.6f));
+    setColour(juce::ScrollBar::thumbColourId, cyan.withAlpha(0.5f));
 
-    setColour(juce::PopupMenu::backgroundColourId, panelTop);
-    setColour(juce::PopupMenu::textColourId, textLight);
-    setColour(juce::PopupMenu::highlightedBackgroundColourId, accentHardware.withAlpha(0.3f));
+    setColour(juce::PopupMenu::backgroundColourId, shellLeadTop);
+    setColour(juce::PopupMenu::textColourId, textPrimary);
+    setColour(juce::PopupMenu::highlightedBackgroundColourId, cyan.withAlpha(0.28f));
     setColour(juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
 
-    setColour(juce::TooltipWindow::backgroundColourId, panelTop);
-    setColour(juce::TooltipWindow::textColourId, textLight);
-    setColour(juce::TooltipWindow::outlineColourId, inkBorder);
+    setColour(juce::TooltipWindow::backgroundColourId, shellLeadTop);
+    setColour(juce::TooltipWindow::textColourId, textPrimary);
+    setColour(juce::TooltipWindow::outlineColourId, juce::Colours::black);
 
-    setColour(juce::CaretComponent::caretColourId, lcdGreenText);
+    setColour(juce::CaretComponent::caretColourId, cyanLight);
+
+    setColour(juce::TextEditor::textColourId, cyanLight);
+    setColour(juce::TextEditor::highlightColourId, cyan.withAlpha(0.4f));
 }
 
 void AAOMLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int width, int height, float sliderPos,
@@ -45,51 +46,56 @@ void AAOMLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int widt
 {
     using namespace palette;
 
-    const auto bounds = juce::Rectangle<int>(x, y, width, height).toFloat().reduced(2.0f);
-    const float radius = juce::jmin(bounds.getWidth(), bounds.getHeight()) / 2.0f;
+    const auto bounds = juce::Rectangle<int>(x, y, width, height).toFloat();
     const auto centre = bounds.getCentre();
-    const float angle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+    const float radius = juce::jmin(bounds.getWidth(), bounds.getHeight()) / 2.0f;
 
-    // Knob body: off-centre highlight radial gradient (matches the CSS
-    // "radial-gradient(circle at 36% 28%, ...)" focus point).
-    const juce::Point<float> focus(centre.x - radius * 0.28f, centre.y - radius * 0.44f);
-    juce::ColourGradient body(juce::Colour(0xff6a6258), focus.x, focus.y, juce::Colour(0xff2a2620), centre.x,
-                              centre.y + radius, true);
-    g.setGradientFill(body);
-    g.fillEllipse(juce::Rectangle<float>(radius * 2.0f, radius * 2.0f).withCentre(centre));
+    // Ring: two annular pie segments (filled + dim remainder) reproduce the
+    // design's conic-gradient(from -135deg, cyan 0 deg, rgba(255,255,255,.07)
+    // deg 270deg, transparent 270deg). rotaryStartAngle/rotaryEndAngle are
+    // used as-is (rather than hardcoded) so the ring always matches whatever
+    // sweep the Slider is actually configured with; the editor pins every
+    // knob's RotaryParameters to exactly -135deg..+135deg to match the design
+    // (JUCE's own default sweep is close but not identical).
+    const float innerProportion = juce::jlimit(0.0f, 0.95f, (radius - 6.0f) / radius);
+    const float sweptAngle = rotaryStartAngle + sliderPos * (rotaryEndAngle - rotaryStartAngle);
+    const auto ringColour = slider.isEnabled() ? cyan : textDisabled3;
 
-    // Knurled inset disc: alternating wedges, inset from the rim so a thin
-    // bezel of the body gradient shows through at the edge.
-    const float ringRadius = radius - juce::jmax(2.5f, radius * 0.16f);
-    const int numWedges = 30;
-    for (int i = 0; i < numWedges; ++i)
+    if (sliderPos > 0.0f)
     {
-        const float a0 = (juce::MathConstants<float>::twoPi * i) / numWedges;
-        const float a1 = (juce::MathConstants<float>::twoPi * (i + 1)) / numWedges;
-        juce::Path wedge;
-        wedge.addPieSegment(centre.x - ringRadius, centre.y - ringRadius, ringRadius * 2.0f, ringRadius * 2.0f, a0,
-                            a1, 0.0f);
-        g.setColour(i % 2 == 0 ? knurlLight : knurlDark);
-        g.fillPath(wedge);
+        juce::Path fillArc;
+        fillArc.addPieSegment(bounds, rotaryStartAngle, sweptAngle, innerProportion);
+        g.setColour(ringColour);
+        g.fillPath(fillArc);
+    }
+    if (sliderPos < 1.0f)
+    {
+        juce::Path restArc;
+        restArc.addPieSegment(bounds, sweptAngle, rotaryEndAngle, innerProportion);
+        g.setColour(juce::Colours::white.withAlpha(0.07f));
+        g.fillPath(restArc);
     }
 
-    g.setColour(inkBezel);
-    g.drawEllipse(juce::Rectangle<float>(radius * 2.0f, radius * 2.0f).withCentre(centre), 1.4f);
+    // Cap: dark off-centre radial gradient, inset by the ring width.
+    const float capRadius = radius * innerProportion;
+    const juce::Point<float> focus(centre.x - capRadius * 0.28f, centre.y - capRadius * 0.44f);
+    juce::ColourGradient cap(juce::Colour(0xff3c4247), focus.x, focus.y, juce::Colour(0xff171a1e), centre.x,
+                             centre.y + capRadius, true);
+    g.setGradientFill(cap);
+    g.fillEllipse(juce::Rectangle<float>(capRadius * 2.0f, capRadius * 2.0f).withCentre(centre));
+    g.setColour(juce::Colours::white.withAlpha(0.10f));
+    g.drawEllipse(juce::Rectangle<float>(capRadius * 2.0f, capRadius * 2.0f).withCentre(centre), 1.0f);
 
-    // Amber pointer with a soft glow (approximated as a wider, low-alpha copy
-    // of the same shape behind the crisp one).
-    juce::Path pointer;
-    const float pointerLen = ringRadius * 0.92f;
-    const float pointerThickness = juce::jmax(1.8f, radius * 0.09f);
-    pointer.addRoundedRectangle(-pointerThickness * 0.5f, -pointerLen, pointerThickness, pointerLen * 0.55f,
-                                pointerThickness * 0.4f);
-    const auto pointerTransform = juce::AffineTransform::rotation(angle).translated(centre.x, centre.y);
-    const auto colour = slider.isEnabled() ? accentHardware : textFaint;
-
-    g.setColour(colour.withAlpha(0.35f));
-    g.fillPath(pointer, juce::AffineTransform::scale(2.0f, 1.1f).followedBy(pointerTransform));
-    g.setColour(colour);
-    g.fillPath(pointer, pointerTransform);
+    // Pointer: small glowing dot near the rim of the cap. Cheap glow: a
+    // soft low-alpha pass behind the crisp dot (same trick used for the LCD
+    // text glow and the morph-pad puck).
+    const float pointerDist = juce::jmax(0.0f, capRadius - 5.5f);
+    const juce::Point<float> pointerPos = centre.getPointOnCircumference(pointerDist, sweptAngle);
+    const float dotR = 2.5f;
+    g.setColour(ringColour.withAlpha(0.55f));
+    g.fillEllipse(juce::Rectangle<float>(dotR * 3.2f, dotR * 3.2f).withCentre(pointerPos));
+    g.setColour(ringColour);
+    g.fillEllipse(juce::Rectangle<float>(dotR * 2.0f, dotR * 2.0f).withCentre(pointerPos));
 }
 
 void AAOMLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int width, int height, float sliderPos,
@@ -98,141 +104,96 @@ void AAOMLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int widt
 {
     using namespace palette;
 
-    if (style != juce::Slider::LinearVertical)
+    if (style != juce::Slider::LinearHorizontal)
     {
         LookAndFeel_V4::drawLinearSlider(g, x, y, width, height, sliderPos, minSliderPos, maxSliderPos, style,
                                          slider);
         return;
     }
 
-    const float trackW = 5.0f;
-    const float cx = static_cast<float>(x) + static_cast<float>(width) * 0.5f;
-    const juce::Rectangle<float> track(cx - trackW * 0.5f, static_cast<float>(y), trackW, static_cast<float>(height));
-    g.setColour(inkTrack);
-    g.fillRoundedRectangle(track, trackW * 0.5f);
-    g.setColour(inkBorder);
-    g.drawRoundedRectangle(track, trackW * 0.5f, 1.0f);
+    const float trackH = 5.0f;
+    const float cy = static_cast<float>(y) + static_cast<float>(height) * 0.5f;
+    const juce::Rectangle<float> track(static_cast<float>(x), cy - trackH * 0.5f, static_cast<float>(width), trackH);
+    g.setColour(trackBg);
+    g.fillRoundedRectangle(track, trackH * 0.5f);
 
-    // Detent marks, one per parameter step. JUCE maps a vertical slider's value
-    // linearly across [y, y + height] with the maximum at the top, so
-    // valueToProportionOfLength gives the exact tick positions (and stays right
-    // if the parameter is ever skewed). Ticks are thinned out when the steps are
-    // finer than the pixels can separate, and the centre detent is emphasised.
-    const double interval = slider.getInterval();
-    const double span = slider.getMaximum() - slider.getMinimum();
-    if (interval > 0.0 && span > 0.0)
+    const float fillW = juce::jlimit(0.0f, static_cast<float>(width), sliderPos - static_cast<float>(x));
+    if (fillW > 0.5f)
     {
-        const int numIntervals = juce::roundToInt(span / interval);
-        if (numIntervals > 0 && numIntervals <= 512)
-        {
-            constexpr float minSpacing = 7.0f;
-            int stride = 1;
-            while (stride < numIntervals
-                   && static_cast<float>(height) * static_cast<float>(stride)
-                          / static_cast<float>(numIntervals) < minSpacing)
-                ++stride;
-
-            const float outer = juce::jmin(9.0f, static_cast<float>(width) * 0.5f);
-            const float inner = trackW * 0.5f + 2.0f;
-            if (outer > inner)
-            {
-                for (int i = 0; i <= numIntervals; i += stride)
-                {
-                    const double value = slider.getMinimum() + interval * i;
-                    const auto prop = static_cast<float>(slider.valueToProportionOfLength(value));
-                    const float ty = static_cast<float>(y) + (1.0f - prop) * static_cast<float>(height);
-
-                    const bool isCentre = std::abs(prop - 0.5f) < 1.0e-3f;
-                    g.setColour(isCentre ? accentHardware.withAlpha(0.55f) : textFaint.withAlpha(0.45f));
-                    const float len = isCentre ? outer - inner : (outer - inner) * 0.7f;
-                    g.fillRect(cx - inner - len, ty - 0.5f, len, 1.0f);
-                    g.fillRect(cx + inner, ty - 0.5f, len, 1.0f);
-                }
-            }
-        }
+        juce::ColourGradient fillGrad(cyanMid2, track.getX(), track.getY(), cyanMid1, track.getX(), track.getBottom(),
+                                      false);
+        g.setGradientFill(fillGrad);
+        g.fillRoundedRectangle(track.withWidth(fillW), trackH * 0.5f);
     }
 
-    const float capH = 14.0f;
-    const float capW = juce::jmax(18.0f, static_cast<float>(width) - 2.0f);
-    const juce::Rectangle<float> cap(cx - capW * 0.5f, sliderPos - capH * 0.5f, capW, capH);
-
-    juce::ColourGradient capGrad(juce::Colour(0xff5a544b), cap.getX(), cap.getY(), juce::Colour(0xff2a2620),
-                                 cap.getX(), cap.getBottom(), false);
-    g.setGradientFill(capGrad);
-    g.fillRoundedRectangle(cap, 3.0f);
-    g.setColour(inkBorder);
-    g.drawRoundedRectangle(cap, 3.0f, 1.0f);
-
-    g.setColour(slider.isEnabled() ? accentHardware : textFaint);
-    g.fillRect(cap.getX() + 2.0f, cap.getCentreY() - 1.0f, cap.getWidth() - 4.0f, 2.0f);
+    const float thumbD = 15.0f;
+    const juce::Point<float> thumbCentre(sliderPos, cy);
+    juce::ColourGradient thumb(juce::Colour(0xff4b5257), thumbCentre.x - thumbD * 0.12f, thumbCentre.y - thumbD * 0.2f,
+                               juce::Colour(0xff202428), thumbCentre.x, thumbCentre.y, true);
+    g.setGradientFill(thumb);
+    g.fillEllipse(juce::Rectangle<float>(thumbD, thumbD).withCentre(thumbCentre));
+    g.setColour(juce::Colours::black.withAlpha(0.35f));
+    g.drawEllipse(juce::Rectangle<float>(thumbD, thumbD).withCentre(thumbCentre), 1.0f);
 }
 
-void AAOMLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button,
-                                           const juce::Colour& backgroundColour, bool isHighlighted, bool isDown)
+void AAOMLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
+                                           bool isHighlighted, bool isDown)
 {
     using namespace palette;
 
-    auto bounds = button.getLocalBounds().toFloat();
-    float radius = 4.0f;
-    if (button.getComponentID() == "pill")
-        radius = bounds.getHeight() * 0.5f;
-    else if (button.getComponentID() == "close")
-        radius = 6.0f;
+    const auto bounds = button.getLocalBounds().toFloat();
 
-    if (isDown)
-        bounds = bounds.translated(0.0f, 1.0f);
-
-    juce::ColourGradient grad(backgroundColour.brighter(0.3f), bounds.getX(), bounds.getY(),
-                             backgroundColour.darker(0.2f), bounds.getX(), bounds.getBottom(), false);
-    g.setGradientFill(grad);
-    g.fillRoundedRectangle(bounds, radius);
-
-    if (isDown)
+    if (button.getComponentID() == "cabSwitch")
     {
-        g.setColour(juce::Colours::black.withAlpha(0.3f));
+        const bool on = button.getToggleState();
+        const float radius = bounds.getHeight() * 0.5f;
+        juce::ColourGradient track(on ? cyanMid1 : juce::Colour(0xff1a1d20), bounds.getX(), bounds.getY(),
+                                   on ? cyan : juce::Colour(0xff22262a), bounds.getX(), bounds.getBottom(), false);
+        g.setGradientFill(track);
         g.fillRoundedRectangle(bounds, radius);
-    }
-    else if (isHighlighted)
-    {
-        g.setColour(juce::Colours::white.withAlpha(0.07f));
-        g.fillRoundedRectangle(bounds, radius);
+
+        const float knobD = 15.0f;
+        const float knobX = on ? bounds.getRight() - knobD - 2.0f : bounds.getX() + 2.0f;
+        const juce::Rectangle<float> knob(knobX, bounds.getY() + 2.0f, knobD, knobD);
+        juce::ColourGradient knobGrad(juce::Colour(0xfff2f6f7), knob.getX() + knobD * 0.38f, knob.getY() + knobD * 0.3f,
+                                      juce::Colour(0xffc3ced0), knob.getCentreX(), knob.getCentreY(), true);
+        g.setGradientFill(knobGrad);
+        g.fillEllipse(knob);
+        return;
     }
 
-    g.setColour(inkBezel);
-    g.drawRoundedRectangle(bounds.reduced(0.5f), radius, 1.0f);
+    // Small square icon buttons (search / clear / close) -- 0 radius by
+    // design (the token table calls out small buttons and the modal as
+    // deliberately square).
+    g.setColour(smallButtonBg);
+    g.fillRect(bounds);
+    g.setColour(juce::Colours::white.withAlpha(isDown ? 0.16f : isHighlighted ? 0.13f : 0.09f));
+    g.drawRect(bounds, 1.0f);
 }
 
-void AAOMLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool isDown)
+void AAOMLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool)
 {
-    auto font = juce::Font(11.0f, juce::Font::bold);
-    font.setExtraKerningFactor(0.09f);
-    font.setHorizontalScale(0.92f);
-    g.setFont(font);
+    if (button.getComponentID() == "cabSwitch")
+        return; // pill switch carries no label
+
+    const auto bounds = button.getLocalBounds();
+    const float size = juce::jmin(13.0f, static_cast<float>(bounds.getHeight()) * 0.55f);
+    g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), size, juce::Font::plain));
     g.setColour(button.findColour(button.getToggleState() ? juce::TextButton::textColourOnId
                                                            : juce::TextButton::textColourOffId));
-    auto bounds = button.getLocalBounds();
-    if (isDown)
-        bounds = bounds.translated(0, 1);
-    g.drawText(button.getButtonText().toUpperCase(), bounds, juce::Justification::centred);
+    g.drawText(button.getButtonText(), bounds, juce::Justification::centred);
 }
 
-void AAOMLookAndFeel::fillTextEditorBackground(juce::Graphics& g, int width, int height, juce::TextEditor& editor)
+void AAOMLookAndFeel::fillTextEditorBackground(juce::Graphics& g, int width, int height, juce::TextEditor&)
 {
-    using namespace palette;
-    juce::ignoreUnused(editor);
-    juce::ColourGradient grad(lcdBgTop, 0.0f, 0.0f, inkLcdBottom, 0.0f, static_cast<float>(height), false);
-    g.setGradientFill(grad);
-    g.fillRoundedRectangle(juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height)),
-                           6.0f);
+    g.setColour(palette::recessDeep);
+    g.fillRect(0, 0, width, height);
 }
 
-void AAOMLookAndFeel::drawTextEditorOutline(juce::Graphics& g, int width, int height, juce::TextEditor& editor)
+void AAOMLookAndFeel::drawTextEditorOutline(juce::Graphics&, int, int, juce::TextEditor&)
 {
-    juce::ignoreUnused(editor);
-    g.setColour(palette::inkBezel);
-    g.drawRoundedRectangle(
-        juce::Rectangle<float>(0.5f, 0.5f, static_cast<float>(width) - 1.0f, static_cast<float>(height) - 1.0f),
-        6.0f, 1.0f);
+    // No visible outline in the new design -- the recessed fill alone reads
+    // as the field boundary.
 }
 
 } // namespace aaom

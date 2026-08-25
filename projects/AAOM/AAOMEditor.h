@@ -16,10 +16,10 @@ namespace aaom
 
 class AAOMProcessor;
 
-// Hardware-styled editor: brushed-metal chassis, engraved nameplate, 4 amp
-// corner modules around a CRT-style morph screen, an EQ fader bank, and
-// input/output knobs. Ported from the design handoff in
-// .claude/Audio plugin profile mixer/design_handoff_amp_morph.
+// "Morph field" editor: dark cyan/graphite panel, a color-mosaic morph pad
+// with an adjustable extrapolation RANGE, 4 corner cards, a 6-knob tone-stack
+// row, and a CAB IR strip. Ported from the design handoff in
+// .claude/design_handoff_morph_pad.
 class AAOMEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -30,6 +30,16 @@ public:
     void resized() override;
 
 private:
+    // Label that fires onClick on mouseDown -- used for the CAB IR name,
+    // which (unlike a button) has no border/background of its own, just
+    // centered plain text sitting in the CAB IR bar's own recessed panel.
+    class ClickableLabel : public juce::Label
+    {
+    public:
+        std::function<void()> onClick;
+        void mouseDown(const juce::MouseEvent&) override;
+    };
+
     void timerCallback() override;
     void refreshCorners();
     void handleSelect(int corner);
@@ -38,17 +48,18 @@ private:
     void handlePick(int corner, int profileIndex);
     void doPaste(int corner, const juce::String& json, bool allowRunMismatch);
 
-    // Model selector (the LCD chip in the nameplate).
+    // Model selector (the status pill in the header).
     void showModelMenu();
     void browseForModel();
     void loadModel(const juce::File& file);
     void refreshModelChip();
 
-    // Cabinet IR (the LCD chip in the strip below the morph pad).
+    // Cabinet IR (the name text in the CAB IR bar).
     void showCabMenu();
     void browseForIr();
     void loadIr(const juce::File& file);
     void refreshCabChip();
+    void updateCabText(); // text/colour only; called from refreshCabChip() and on cabOn changes
 
     AAOMProcessor& proc_;
 
@@ -59,32 +70,41 @@ private:
     std::array<std::unique_ptr<AmpSlotComponent>, 4> slots_;
     ProfileLibrary library_;
 
-    juce::Label subtitle_;
     LcdReadout presetChip_;
+    juce::Label help_;
 
-    // Cab IR strip: engraved label, chip (name + load menu), on/off switch.
-    juce::Label cabLabel_;
-    LcdReadout cabChip_;
-    mrta::ParameterButton cabToggle_;
+    // RANGE / SMOOTH controls block, below the corner cards.
+    mrta::ParameterSlider rangeSlider_;
+    mrta::ParameterSlider smoothSlider_;
+    juce::Label rangeLabel_, rangeValue_;
+    juce::Label smoothLabel_, smoothValue_;
 
+    // Knob row: Input, Bass, Mid, Treble, Presence | divider | Output.
+    mrta::ParameterSlider inputGain_;
     mrta::ParameterSlider eqBass_;
     mrta::ParameterSlider eqMid_;
     mrta::ParameterSlider eqTreble_;
     mrta::ParameterSlider eqPresence_;
-    std::array<juce::Label, 4> eqLabels_;
-
-    mrta::ParameterSlider inputGain_;
     mrta::ParameterSlider outputGain_;
-    LcdReadout inputLcd_;
-    LcdReadout outputLcd_;
-    juce::Label inputLabel_;
-    juce::Label outputLabel_;
+    std::array<juce::Label, 6> knobLabels_;
+    std::array<juce::Label, 6> knobValues_;
+
+    // CAB IR bar: engraved label, clickable IR name (opens the load menu),
+    // on/off switch.
+    juce::Label cabLabel_;
+    ClickableLabel cabName_;
+    mrta::ParameterButton cabToggle_;
+    bool lastCabOn_ = true;
 
     // Bounds cached in resized(), drawn in paint().
-    juce::Rectangle<float> titleBounds_;
-    juce::Rectangle<float> bottomStripBounds_;
-    juce::Rectangle<float> cabStripBounds_;
-    int bottomStripDividerX_ = 0;
+    juce::Rectangle<float> dividerBounds_;
+    juce::Rectangle<float> wordmarkBounds_;
+    juce::Rectangle<float> helpBounds_;
+    juce::Rectangle<float> controlsBlockBounds_;
+    juce::Rectangle<float> knobRowBounds_;
+    float knobDividerX_ = 0.0f;
+    juce::Rectangle<float> cabBarBounds_;
+    float cabDividerX_ = 0.0f;
 
     int lastCornerGen_ = -1;
     int lastModelGen_ = -1;

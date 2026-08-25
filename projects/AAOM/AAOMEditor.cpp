@@ -2,114 +2,87 @@
 #include "AAOMProcessor.h"
 #include "gui/Palette.h"
 
+#include <cmath>
+
 namespace aaom
 {
 
 namespace
 {
+const juce::String kPlusMinus(juce::CharPointer_UTF8("\xc2\xb1")); // U+00B1
+const juce::String kMinus(juce::CharPointer_UTF8("\xe2\x88\x92")); // U+2212
+
+// Matches the design handoff's fmtSigned(): '+'/'-' prefix (dead zone around
+// 0), then the magnitude with `decimals` places, then `unit`.
+juce::String formatSigned(float v, int decimals, const juce::String& unit)
+{
+    const juce::String sign = v < -0.0499f ? kMinus : v > 0.0499f ? juce::String("+") : juce::String();
+    return sign + juce::String(std::abs(v), decimals) + unit;
+}
+
 void styleSideLabel(juce::Label& label, const juce::String& text)
 {
     label.setText(text, juce::dontSendNotification);
-    label.setFont(juce::Font(9.0f).withExtraKerningFactor(0.14f));
-    label.setColour(juce::Label::textColourId, palette::textDim);
-    label.setJustificationType(juce::Justification::centred);
+    label.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain)
+                     .withExtraKerningFactor(0.12f));
+    label.setColour(juce::Label::textColourId, palette::textMuted);
+    label.setJustificationType(juce::Justification::centredLeft);
 }
 } // namespace
+
+void AAOMEditor::ClickableLabel::mouseDown(const juce::MouseEvent&)
+{
+    if (onClick)
+        onClick();
+}
 
 AAOMEditor::AAOMEditor(AAOMProcessor& processor)
 : juce::AudioProcessorEditor(processor)
 , proc_(processor)
 , library_(processor)
-, cabToggle_(pid::cabOn, processor.getParameterManager().getAPVTS())
+, rangeSlider_(pid::morphRange, processor.getParameterManager().getAPVTS())
+, smoothSlider_(pid::morphSmooth, processor.getParameterManager().getAPVTS())
+, inputGain_(pid::inputGain, processor.getParameterManager().getAPVTS())
 , eqBass_(pid::eqBass, processor.getParameterManager().getAPVTS())
 , eqMid_(pid::eqMid, processor.getParameterManager().getAPVTS())
 , eqTreble_(pid::eqTreble, processor.getParameterManager().getAPVTS())
 , eqPresence_(pid::eqPresence, processor.getParameterManager().getAPVTS())
-, inputGain_(pid::inputGain, processor.getParameterManager().getAPVTS())
 , outputGain_(pid::outputGain, processor.getParameterManager().getAPVTS())
+, cabToggle_(pid::cabOn, processor.getParameterManager().getAPVTS())
 {
     setLookAndFeel(&lookAndFeel_);
+    using namespace palette;
 
-    subtitle_.setFont(juce::Font(10.0f, juce::Font::plain).withExtraKerningFactor(0.35f));
-    addAndMakeVisible(subtitle_);
+    help_.setInterceptsMouseClicks(true, false);
+    help_.setTooltip("Drag the field to blend the four corner profiles. Drag past a corner to "
+                     "extrapolate beyond it -- RANGE controls how far.");
+    addAndMakeVisible(help_);
 
-    // The chip is the model selector: it shows which bundle is live and opens a
-    // menu to switch. The loaded model's stats (or the load error / warning) go
-    // on its tooltip, since the chassis has no permanent room for that text.
-    presetChip_.setTextColour(juce::Colour(0xffc9a24a));
-    presetChip_.setCaretShown(true);
+    // Status pill: shows which bundle is live and opens a menu to switch. The
+    // loaded model's stats (or the load error / warning) go on its tooltip,
+    // since the header has no permanent room for that text.
     presetChip_.setInterceptsMouseClicks(true, false);
     presetChip_.setMouseCursor(juce::MouseCursor::PointingHandCursor);
     presetChip_.onClick = [this] { showModelMenu(); };
     addAndMakeVisible(presetChip_);
-    // Populated by refreshModelChip() below — it refreshes the corner slots too,
-    // so it has to run after those are constructed.
-
-    // Cab IR strip: the chip names the loaded impulse response and opens the
-    // load menu; its tooltip carries the detail (length, rate, partitioning),
-    // and the switch beside it is the automatable Cab parameter.
-    styleSideLabel(cabLabel_, "CAB");
-    addAndMakeVisible(cabLabel_);
-
-    cabChip_.setCaretShown(true);
-    cabChip_.setInterceptsMouseClicks(true, false);
-    cabChip_.setMouseCursor(juce::MouseCursor::PointingHandCursor);
-    cabChip_.onClick = [this] { showCabMenu(); };
-    addAndMakeVisible(cabChip_);
-    refreshCabChip();
-
-    cabToggle_.setComponentID("pill");
-    cabToggle_.setColour(juce::TextButton::buttonColourId, palette::panelTop);
-    cabToggle_.setColour(juce::TextButton::buttonOnColourId, palette::accentHardware);
-    cabToggle_.setColour(juce::TextButton::textColourOffId, palette::textDim);
-    cabToggle_.setColour(juce::TextButton::textColourOnId, palette::textEngravedDeep);
-    cabToggle_.setTooltip("Switch the cabinet IR in and out of the chain.");
-    addAndMakeVisible(cabToggle_);
-
-    for (auto* slider : {&eqBass_, &eqMid_, &eqTreble_, &eqPresence_})
-    {
-        slider->setSliderStyle(juce::Slider::LinearVertical);
-        slider->setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
-        addAndMakeVisible(*slider);
-    }
-    styleSideLabel(eqLabels_[0], "BASS");
-    styleSideLabel(eqLabels_[1], "MID");
-    styleSideLabel(eqLabels_[2], "TREBLE");
-    styleSideLabel(eqLabels_[3], "PRES");
-    for (auto& l : eqLabels_)
-        addAndMakeVisible(l);
-
-    for (auto* knob : {&inputGain_, &outputGain_})
-    {
-        knob->setSliderStyle(juce::Slider::RotaryVerticalDrag);
-        knob->setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
-        addAndMakeVisible(*knob);
-    }
-
-    inputGain_.onValueChange = [this] { inputLcd_.setText(juce::String(inputGain_.getValue(), 1)); };
-    outputGain_.onValueChange = [this] { outputLcd_.setText(juce::String(outputGain_.getValue(), 1)); };
-    inputLcd_.setText(juce::String(inputGain_.getValue(), 1));
-    outputLcd_.setText(juce::String(outputGain_.getValue(), 1));
-    addAndMakeVisible(inputLcd_);
-    addAndMakeVisible(outputLcd_);
-    styleSideLabel(inputLabel_, "INPUT");
-    styleSideLabel(outputLabel_, "OUTPUT");
-    addAndMakeVisible(inputLabel_);
-    addAndMakeVisible(outputLabel_);
+    // Populated by refreshModelChip() below -- it refreshes the corner slots
+    // too, so it has to run after those are constructed.
 
     pad_.onDrag = [this](float x, float y) {
+        // setValueNotifyingHost expects a normalised [0,1] value; the pad
+        // reports actual morph coordinates (which range past [0,1] to
+        // extrapolate).
         auto& apvts = proc_.getParameterManager().getAPVTS();
         if (auto* px = apvts.getParameter(pid::morphX))
-            px->setValueNotifyingHost(x);
+            px->setValueNotifyingHost(px->convertTo0to1(x));
         if (auto* py = apvts.getParameter(pid::morphY))
-            py->setValueNotifyingHost(y);
+            py->setValueNotifyingHost(py->convertTo0to1(y));
     };
     addAndMakeVisible(pad_);
 
     for (int i = 0; i < 4; ++i)
     {
-        const bool alignRight = (i == 1 || i == 3); // BR, TR sit in the right column
-        slots_[static_cast<std::size_t>(i)] = std::make_unique<AmpSlotComponent>(i, alignRight);
+        slots_[static_cast<std::size_t>(i)] = std::make_unique<AmpSlotComponent>(i);
         slots_[static_cast<std::size_t>(i)]->onSelect = [this](int c) { handleSelect(c); };
         slots_[static_cast<std::size_t>(i)]->onPaste = [this](int c) { handlePaste(c); };
         slots_[static_cast<std::size_t>(i)]->onClear = [this](int c) { handleClear(c); };
@@ -119,14 +92,98 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
     library_.onPick = [this](int corner, int idx) { handlePick(corner, idx); };
     addChildComponent(library_);
 
-    // Fills in the chip, subtitle and corner slots. Must come after slots_ exist.
+    // RANGE / SMOOTH controls block.
+    styleSideLabel(rangeLabel_, "RANGE");
+    addAndMakeVisible(rangeLabel_);
+    rangeSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
+    rangeSlider_.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+    rangeSlider_.onValueChange = [this] {
+        const auto r = static_cast<float>(rangeSlider_.getValue());
+        pad_.setRange(r);
+        rangeValue_.setText(kPlusMinus + juce::String(r, 2), juce::dontSendNotification);
+    };
+    addAndMakeVisible(rangeSlider_);
+    rangeValue_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.5f, juce::Font::plain));
+    rangeValue_.setColour(juce::Label::textColourId, textValue);
+    rangeValue_.setJustificationType(juce::Justification::centredRight);
+    addAndMakeVisible(rangeValue_);
+    rangeSlider_.onValueChange();
+
+    styleSideLabel(smoothLabel_, "SMOOTH");
+    addAndMakeVisible(smoothLabel_);
+    smoothSlider_.setSliderStyle(juce::Slider::LinearHorizontal);
+    smoothSlider_.setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+    smoothSlider_.onValueChange = [this] {
+        smoothValue_.setText(juce::String(juce::roundToInt(smoothSlider_.getValue())) + " ms",
+                             juce::dontSendNotification);
+    };
+    addAndMakeVisible(smoothSlider_);
+    smoothValue_.setFont(rangeValue_.getFont());
+    smoothValue_.setColour(juce::Label::textColourId, textValue);
+    smoothValue_.setJustificationType(juce::Justification::centredRight);
+    addAndMakeVisible(smoothValue_);
+    smoothSlider_.onValueChange();
+
+    // Knob row.
+    static const char* const kKnobLabels[6] = {"Input", "Bass", "Mid", "Treble", "Presence", "Output"};
+    static const int kKnobDecimals[6] = {1, 1, 1, 1, 1, 1};
+    static const char* const kKnobUnits[6] = {" dB", "", "", "", "", " dB"};
+    const std::array<mrta::ParameterSlider*, 6> knobs{
+        {&inputGain_, &eqBass_, &eqMid_, &eqTreble_, &eqPresence_, &outputGain_}};
+    for (std::size_t i = 0; i < knobs.size(); ++i)
+    {
+        auto* knob = knobs[i];
+        knob->setSliderStyle(juce::Slider::RotaryVerticalDrag);
+        knob->setTextBoxStyle(juce::Slider::NoTextBox, true, 0, 0);
+        // JUCE's own default sweep (7 o'clock..5 o'clock, 288deg) is close but
+        // not identical to the design's exact conic-gradient geometry; pin it
+        // to -135deg..+135deg (270deg) so the ring/pointer match the spec.
+        knob->setRotaryParameters(-juce::MathConstants<float>::pi * 0.75f, juce::MathConstants<float>::pi * 0.75f,
+                                  true);
+        addAndMakeVisible(*knob);
+
+        knobLabels_[i].setText(kKnobLabels[i], juce::dontSendNotification);
+        knobLabels_[i].setFont(juce::Font(10.0f, juce::Font::plain).withExtraKerningFactor(0.06f));
+        knobLabels_[i].setColour(juce::Label::textColourId, textLabel);
+        knobLabels_[i].setJustificationType(juce::Justification::centred);
+        addAndMakeVisible(knobLabels_[i]);
+
+        knobValues_[i].setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 11.5f, juce::Font::plain));
+        knobValues_[i].setColour(juce::Label::textColourId, textValue);
+        knobValues_[i].setJustificationType(juce::Justification::centred);
+        addAndMakeVisible(knobValues_[i]);
+
+        const int decimals = kKnobDecimals[i];
+        const juce::String unit = kKnobUnits[i];
+        auto& valueLabel = knobValues_[i];
+        knob->onValueChange = [knob, &valueLabel, decimals, unit] {
+            valueLabel.setText(formatSigned(static_cast<float>(knob->getValue()), decimals, unit),
+                               juce::dontSendNotification);
+        };
+        knob->onValueChange();
+    }
+
+    // Cab IR strip: label | name (click opens the load menu) | on/off switch.
+    styleSideLabel(cabLabel_, "CAB IR");
+    addAndMakeVisible(cabLabel_);
+
+    cabName_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
+    cabName_.setJustificationType(juce::Justification::centred);
+    cabName_.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    cabName_.onClick = [this] { showCabMenu(); };
+    addAndMakeVisible(cabName_);
+
+    cabToggle_.setComponentID("cabSwitch");
+    cabToggle_.setButtonText({});
+    cabToggle_.setTooltip("Switch the cabinet IR in and out of the chain.");
+    addAndMakeVisible(cabToggle_);
+    refreshCabChip();
+
+    // Fills in the status pill and corner slots. Must come after slots_ exist.
     refreshModelChip();
 
-    setResizable(true, true);
-    setResizeLimits(480, 483, 960, 966);
-    if (auto* constrainer = getConstrainer())
-        constrainer->setFixedAspectRatio(620.0 / 624.0);
-    setSize(620, 624);
+    setResizable(false, false);
+    setSize(940, 740);
     startTimerHz(30);
 }
 
@@ -148,8 +205,15 @@ void AAOMEditor::timerCallback()
 
     const CornerWeights w = computeCornerWeights(x, y);
     const std::array<float, 4> weights{{w.bl, w.br, w.tl, w.tr}};
+    int leadIdx = 0;
+    for (int i = 1; i < 4; ++i)
+        if (weights[static_cast<std::size_t>(i)] > weights[static_cast<std::size_t>(leadIdx)])
+            leadIdx = i;
     for (int i = 0; i < 4; ++i)
+    {
         slots_[static_cast<std::size_t>(i)]->setWeight(weights[static_cast<std::size_t>(i)]);
+        slots_[static_cast<std::size_t>(i)]->setLeading(i == leadIdx);
+    }
 
     if (proc_.cornerGeneration() != lastCornerGen_)
         refreshCorners();
@@ -161,15 +225,25 @@ void AAOMEditor::timerCallback()
     // Same for the cab IR: a restored session loads one behind the UI's back.
     if (proc_.irGeneration() != lastIrGen_)
         refreshCabChip();
+
+    // CabOn is a plain toggle button (no onValueChange-style hook for
+    // automation-driven changes), so its effect on the IR name text is
+    // polled here alongside everything else.
+    bool cabOn = true;
+    if (auto* rc = apvts.getRawParameterValue(pid::cabOn))
+        cabOn = rc->load() > 0.5f;
+    if (cabOn != lastCabOn_)
+    {
+        lastCabOn_ = cabOn;
+        updateCabText();
+    }
 }
 
 void AAOMEditor::refreshModelChip()
 {
     lastModelGen_ = proc_.modelGeneration();
 
-    // Chip shows the live bundle's name; the nameplate subtitle and the chip
-    // tooltip carry the detail (stats, or why we are not on the wanted model).
-    presetChip_.setText(proc_.modelDisplayName().toUpperCase());
+    presetChip_.setText(proc_.modelDisplayName().toUpperCase() + "  " + juce::String(proc_.numCatalogProfiles()));
 
     if (proc_.modelLoaded())
     {
@@ -186,20 +260,14 @@ void AAOMEditor::refreshModelChip()
         if (warned)
             status = proc_.modelWarning() + "\n\n" + status;
 
-        subtitle_.setText(warned ? proc_.modelWarning() : juce::String("FOUR-CORNER TONE MIXER"),
-                          juce::dontSendNotification);
-        subtitle_.setColour(juce::Label::textColourId,
-                            warned ? palette::clearTop.brighter(0.6f) : juce::Colour(0xff8a8178));
-        presetChip_.setTextColour(warned ? palette::clearTop.brighter(0.6f) : juce::Colour(0xffc9a24a));
+        presetChip_.setTextColour(warned ? palette::negativeText : palette::cyan);
         presetChip_.setTooltip(status);
     }
     else
     {
         const juce::String error = proc_.bundleError().isNotEmpty() ? proc_.bundleError()
                                                                     : juce::String("No model loaded");
-        subtitle_.setText(error, juce::dontSendNotification);
-        subtitle_.setColour(juce::Label::textColourId, palette::clearTop.brighter(0.6f));
-        presetChip_.setTextColour(palette::clearTop.brighter(0.6f));
+        presetChip_.setTextColour(palette::negativeText);
         presetChip_.setTooltip(error + "\n\nClick to switch model.");
     }
 
@@ -290,19 +358,26 @@ void AAOMEditor::loadModel(const juce::File& file)
                                                 message, this);
 }
 
+void AAOMEditor::updateCabText()
+{
+    using namespace palette;
+    const bool loaded = proc_.irLoaded();
+    const juce::String text =
+        !loaded ? juce::String("No cab IR") : (lastCabOn_ ? proc_.irDisplayName() : juce::String("Cab bypassed"));
+    cabName_.setText(text, juce::dontSendNotification);
+    cabName_.setColour(juce::Label::textColourId, (loaded && lastCabOn_) ? textSecondary : textDisabled);
+}
+
 void AAOMEditor::refreshCabChip()
 {
     lastIrGen_ = proc_.irGeneration();
-
-    const bool loaded = proc_.irLoaded();
-    cabChip_.setText(loaded ? proc_.irDisplayName().toUpperCase() : juce::String("NO CAB IR"));
-    cabChip_.setTextColour(loaded ? palette::lcdGreenText : palette::textFaint);
+    updateCabText();
 
     juce::String tip = proc_.irStatus();
     if (tip.isNotEmpty())
         tip << "\n\n";
     tip << "Click to load a cabinet impulse response.";
-    cabChip_.setTooltip(tip);
+    cabName_.setTooltip(tip);
 }
 
 void AAOMEditor::showCabMenu()
@@ -330,7 +405,7 @@ void AAOMEditor::showCabMenu()
         menu.addItem(3, "Clear recent list");
     }
 
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(cabChip_), [this, recents](int result) {
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(cabName_), [this, recents](int result) {
         if (result == 0)
             return;
         if (result == 2)
@@ -391,14 +466,11 @@ void AAOMEditor::refreshCorners()
         return;
 
     lastCornerGen_ = proc_.cornerGeneration();
-    std::array<bool, 4> assigned{{false, false, false, false}};
     for (int i = 0; i < 4; ++i)
     {
         const auto& c = proc_.corner(i);
-        assigned[static_cast<std::size_t>(i)] = c.assigned;
         slots_[static_cast<std::size_t>(i)]->setContents(c.assigned, c.name);
     }
-    pad_.setCornerAssigned(assigned);
 }
 
 void AAOMEditor::handleSelect(int corner)
@@ -472,169 +544,211 @@ void AAOMEditor::paint(juce::Graphics& g)
 {
     using namespace palette;
     const auto bounds = getLocalBounds().toFloat();
-    const float scale = static_cast<float>(getWidth()) / 620.0f;
 
-    juce::ColourGradient chassisGrad(chassisTop, bounds.getX(), bounds.getY(), chassisBottom, bounds.getX(),
-                                     bounds.getBottom(), false);
-    g.setGradientFill(chassisGrad);
-    g.fillRoundedRectangle(bounds, 14.0f * scale);
+    g.setColour(shell);
+    g.fillRoundedRectangle(bounds, 20.0f);
 
-    {
+    juce::ColourGradient highlight(juce::Colours::white.withAlpha(0.07f), bounds.getCentreX(),
+                                   bounds.getY() - bounds.getHeight() * 0.18f, juce::Colours::transparentWhite,
+                                   bounds.getCentreX(), bounds.getBottom(), true);
+    g.setGradientFill(highlight);
+    g.fillRoundedRectangle(bounds, 20.0f);
+
+    // Ribbed vents, left and right.
+    auto drawVent = [&](float ventX) {
+        const juce::Rectangle<float> vent(ventX, bounds.getY() + 120.0f, 11.0f, bounds.getHeight() - 240.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.5f));
+        g.fillRoundedRectangle(vent, 5.0f);
+
         g.saveState();
         juce::Path clip;
-        clip.addRoundedRectangle(bounds, 14.0f * scale);
+        clip.addRoundedRectangle(vent, 5.0f);
         g.reduceClipRegion(clip);
-        g.setColour(juce::Colours::white.withAlpha(0.045f));
-        for (float x = bounds.getX(); x < bounds.getRight(); x += 3.0f)
-            g.drawVerticalLine(juce::roundToInt(x), bounds.getY(), bounds.getBottom());
+        g.setColour(juce::Colours::white.withAlpha(0.10f));
+        for (float ry = vent.getY(); ry < vent.getBottom(); ry += 3.0f)
+            g.fillRect(vent.getX(), ry, vent.getWidth(), 1.0f);
         g.restoreState();
-    }
 
-    g.setColour(inkBorder);
-    g.drawRoundedRectangle(bounds.reduced(0.5f), 14.0f * scale, 1.0f);
+        g.setColour(juce::Colours::black.withAlpha(0.7f));
+        g.drawRoundedRectangle(vent.reduced(0.5f), 5.0f, 1.0f);
+    };
+    drawVent(bounds.getX() + 9.0f);
+    drawVent(bounds.getRight() - 20.0f);
 
-    // Four corner screws.
-    const float screwR = 7.5f * scale;
-    const float inset = 9.0f * scale + screwR;
-    const std::array<juce::Point<float>, 4> screwCentres{
-        {{bounds.getX() + inset, bounds.getY() + inset},
-         {bounds.getRight() - inset, bounds.getY() + inset},
-         {bounds.getX() + inset, bounds.getBottom() - inset},
-         {bounds.getRight() - inset, bounds.getBottom() - inset}}};
-    const std::array<float, 4> screwAngles{{35.0f, -40.0f, -15.0f, 20.0f}};
-    for (int i = 0; i < 4; ++i)
-    {
-        const auto c = screwCentres[static_cast<std::size_t>(i)];
-        juce::ColourGradient screwGrad(screwLight, c.x - screwR * 0.3f, c.y - screwR * 0.3f, screwDark,
-                                       c.x + screwR, c.y + screwR, true);
-        g.setGradientFill(screwGrad);
-        g.fillEllipse(juce::Rectangle<float>(screwR * 2.0f, screwR * 2.0f).withCentre(c));
+    g.setColour(juce::Colours::black.withAlpha(0.65f));
+    g.drawRoundedRectangle(bounds.reduced(0.5f), 20.0f, 1.0f);
 
-        juce::Path slot;
-        slot.addRoundedRectangle(-screwR * 0.75f, -1.0f * scale, screwR * 1.5f, 2.0f * scale, 1.0f);
-        g.setColour(juce::Colour(0xff1a1712));
-        g.fillPath(slot, juce::AffineTransform::rotation(juce::degreesToRadians(
-                                                              screwAngles[static_cast<std::size_t>(i)]))
-                             .translated(c.x, c.y));
-    }
+    // Header hairline divider.
+    juce::ColourGradient divGrad(juce::Colours::transparentWhite, dividerBounds_.getX(), dividerBounds_.getY(),
+                                 juce::Colours::transparentWhite, dividerBounds_.getRight(),
+                                 dividerBounds_.getY(), false);
+    divGrad.addColour(0.5, juce::Colours::white.withAlpha(0.10f));
+    g.setGradientFill(divGrad);
+    g.fillRect(dividerBounds_);
 
-    // Nameplate title: two-tone "ALLAMPSONME" + accent "MORPH".
-    auto titleFont = juce::Font(22.0f * scale, juce::Font::bold).withExtraKerningFactor(0.05f);
-    g.setFont(titleFont);
+    // Wordmark: two-tone "ALLAMPSONME" + accent "MORPH".
+    auto wordFont = juce::Font(25.0f, juce::Font::plain).withExtraKerningFactor(0.22f);
+    g.setFont(wordFont);
     const juce::String part1("ALLAMPSONME ");
-    const float w1 = juce::GlyphArrangement::getStringWidth(titleFont, part1);
-    g.setColour(textEngraved);
-    g.drawText(part1, titleBounds_.withWidth(w1).toNearestInt(), juce::Justification::centredLeft, false);
-    g.setColour(accentHardware);
-    g.drawText("MORPH", titleBounds_.withX(titleBounds_.getX() + w1).toNearestInt(),
+    const float w1 = juce::GlyphArrangement::getStringWidth(wordFont, part1);
+    g.setColour(textValue);
+    g.drawText(part1, wordmarkBounds_.withWidth(w1).toNearestInt(), juce::Justification::centredLeft, false);
+    g.setColour(cyan);
+    g.drawText("MORPH", wordmarkBounds_.withX(wordmarkBounds_.getX() + w1).toNearestInt(),
               juce::Justification::centredLeft, false);
 
-    // Cab IR strip + bottom strip panels (same recessed panel treatment).
-    auto drawPanel = [&g, scale](const juce::Rectangle<float>& bounds, float radius) {
-        juce::ColourGradient grad(panelTop, bounds.getX(), bounds.getY(), panelBottom, bounds.getX(),
-                                  bounds.getBottom(), false);
-        g.setGradientFill(grad);
-        g.fillRoundedRectangle(bounds, radius * scale);
-        g.setColour(inkBorder);
-        g.drawRoundedRectangle(bounds.reduced(0.5f), radius * scale, 1.0f);
-    };
+    // Help affordance.
+    g.setColour(textPrimary.withAlpha(0.45f));
+    g.drawEllipse(helpBounds_, 1.5f);
+    g.setColour(textPrimary.withAlpha(0.6f));
+    g.setFont(juce::Font(14.0f, juce::Font::plain));
+    g.drawText("?", helpBounds_, juce::Justification::centred);
 
-    drawPanel(cabStripBounds_, 8.0f);
-    drawPanel(bottomStripBounds_, 10.0f);
-    g.drawVerticalLine(bottomStripDividerX_, bottomStripBounds_.getY() + 12.0f * scale,
-                       bottomStripBounds_.getBottom() - 12.0f * scale);
+    // RANGE / SMOOTH controls block chrome.
+    juce::ColourGradient controlsBg(shellLightTop, controlsBlockBounds_.getX(), controlsBlockBounds_.getY(),
+                                    shellLightBottom, controlsBlockBounds_.getX(), controlsBlockBounds_.getBottom(),
+                                    false);
+    g.setGradientFill(controlsBg);
+    g.fillRoundedRectangle(controlsBlockBounds_, 10.0f);
+    g.setColour(juce::Colours::white.withAlpha(0.06f));
+    g.drawLine(controlsBlockBounds_.getX() + 1.0f, controlsBlockBounds_.getY() + 0.5f,
+              controlsBlockBounds_.getRight() - 1.0f, controlsBlockBounds_.getY() + 0.5f, 1.0f);
+    g.setColour(juce::Colours::black.withAlpha(0.6f));
+    g.drawRoundedRectangle(controlsBlockBounds_.reduced(0.5f), 10.0f, 1.0f);
+
+    // Knob row chrome.
+    juce::ColourGradient knobBg(juce::Colour(0xff1b1f22), knobRowBounds_.getX(), knobRowBounds_.getY(), shell,
+                                knobRowBounds_.getX(), knobRowBounds_.getBottom(), false);
+    g.setGradientFill(knobBg);
+    g.fillRoundedRectangle(knobRowBounds_, 12.0f);
+    g.setColour(juce::Colours::white.withAlpha(0.07f));
+    g.drawLine(knobRowBounds_.getX() + 1.0f, knobRowBounds_.getY() + 0.5f, knobRowBounds_.getRight() - 1.0f,
+              knobRowBounds_.getY() + 0.5f, 1.0f);
+    g.setColour(juce::Colours::black.withAlpha(0.6f));
+    g.drawRoundedRectangle(knobRowBounds_.reduced(0.5f), 12.0f, 1.0f);
+
+    juce::ColourGradient kDiv(juce::Colours::transparentBlack, knobDividerX_, knobRowBounds_.getCentreY() - 38.0f,
+                              juce::Colours::transparentBlack, knobDividerX_, knobRowBounds_.getCentreY() + 38.0f,
+                              false);
+    kDiv.addColour(0.5, juce::Colours::black.withAlpha(0.7f));
+    g.setGradientFill(kDiv);
+    g.fillRect(juce::Rectangle<float>(knobDividerX_ - 0.5f, knobRowBounds_.getCentreY() - 38.0f, 1.0f, 76.0f));
+
+    // CAB IR bar chrome.
+    g.setColour(recess);
+    g.fillRoundedRectangle(cabBarBounds_, 8.0f);
+    g.setColour(juce::Colours::black.withAlpha(0.8f));
+    g.drawRoundedRectangle(cabBarBounds_.reduced(0.5f), 8.0f, 1.0f);
+    g.setColour(juce::Colours::white.withAlpha(0.07f));
+    g.fillRect(cabDividerX_ - 0.5f, cabBarBounds_.getY() + 10.0f, 1.0f, 18.0f);
 }
 
 void AAOMEditor::resized()
 {
-    const float scale = static_cast<float>(getWidth()) / 620.0f;
-    auto s = [scale](int v) { return juce::roundToInt(static_cast<float>(v) * scale); };
+    auto content = getLocalBounds().reduced(22);
 
-    auto r = getLocalBounds().reduced(s(22));
+    // Header (56) / hairline divider (1) / main area (flex) / knob row (126)
+    // / CAB IR bar (38), each separated by a 13px gap.
+    auto header = content.removeFromTop(56);
+    content.removeFromTop(13);
+    dividerBounds_ = content.removeFromTop(1).toFloat();
+    content.removeFromTop(13);
 
-    // Nameplate: title (left) + subtitle (below) + preset chip (right).
-    auto nameplate = r.removeFromTop(s(46));
-    auto chipArea = nameplate.removeFromRight(s(112));
-    presetChip_.setBounds(chipArea.withSizeKeepingCentre(chipArea.getWidth(), s(26)));
-    titleBounds_ = nameplate.removeFromTop(s(27)).toFloat();
-    subtitle_.setBounds(nameplate);
+    auto cabBar = content.removeFromBottom(38);
+    content.removeFromBottom(13);
+    auto knobRow = content.removeFromBottom(126);
+    content.removeFromBottom(13);
 
-    r.removeFromTop(s(14));
+    auto mainArea = content;
 
-    // Bottom strip reserved first so the middle row gets the remaining height.
-    auto bottomStrip = r.removeFromBottom(s(136));
-    bottomStripBounds_ = bottomStrip.toFloat();
-    r.removeFromBottom(s(14));
+    // --- Header --------------------------------------------------------
+    auto headerRow = header.reduced(14, 0);
+    auto helpArea = headerRow.removeFromRight(26);
+    helpBounds_ = helpArea.withSizeKeepingCentre(26, 26).toFloat();
+    help_.setBounds(helpArea.withSizeKeepingCentre(26, 26));
+    headerRow.removeFromRight(16);
+    auto pillArea = headerRow.removeFromRight(190);
+    presetChip_.setBounds(pillArea.withSizeKeepingCentre(pillArea.getWidth(), 30));
+    headerRow.removeFromRight(16);
+    wordmarkBounds_ = headerRow.toFloat();
 
-    // Cab IR strip: label | chip | on-off switch, between the pad and the EQ.
-    auto cabStrip = r.removeFromBottom(s(34));
-    cabStripBounds_ = cabStrip.toFloat();
-    r.removeFromBottom(s(12));
+    // --- Main area: pad (flex) + 288px right column ---------------------
+    auto rightCol = mainArea.removeFromRight(288);
+    mainArea.removeFromRight(14);
+    pad_.setBounds(mainArea);
+
+    constexpr int kCardH = 71;
+    constexpr int kGap = 9;
+    auto placeCard = [&](AmpSlotComponent& slot) {
+        slot.setBounds(rightCol.removeFromTop(kCardH));
+        rightCol.removeFromTop(kGap);
+    };
+    // Order top-to-bottom: TL, TR, BL, BR (indices 2, 3, 0, 1).
+    placeCard(*slots_[2]);
+    placeCard(*slots_[3]);
+    placeCard(*slots_[0]);
+    placeCard(*slots_[1]);
+    controlsBlockBounds_ = rightCol.toFloat();
+
     {
-        auto row = cabStrip.reduced(s(10), s(6));
-        cabLabel_.setBounds(row.removeFromLeft(s(30)));
-        row.removeFromLeft(s(6));
-        cabToggle_.setBounds(row.removeFromRight(s(52)));
-        row.removeFromRight(s(8));
-        cabChip_.setBounds(row);
+        auto controls = rightCol.reduced(13, 11);
+        constexpr int kRowH = 20;
+        auto centred = controls.withSizeKeepingCentre(controls.getWidth(), kRowH * 2 + 11);
+        auto rangeRow = centred.removeFromTop(kRowH);
+        centred.removeFromTop(11);
+        auto smoothRow = centred;
+
+        auto layoutRow = [](juce::Rectangle<int> row, juce::Label& label, juce::Component& slider,
+                            juce::Label& value) {
+            label.setBounds(row.removeFromLeft(50));
+            row.removeFromLeft(11);
+            value.setBounds(row.removeFromRight(48));
+            row.removeFromRight(11);
+            slider.setBounds(row);
+        };
+        layoutRow(rangeRow, rangeLabel_, rangeSlider_, rangeValue_);
+        layoutRow(smoothRow, smoothLabel_, smoothSlider_, smoothValue_);
     }
 
-    // Middle row: left corner column / CRT pad (flex) / right corner column.
-    const int colW = s(138);
-    auto middle = r;
-    auto leftCol = middle.removeFromLeft(colW);
-    middle.removeFromLeft(s(14));
-    auto rightCol = middle.removeFromRight(colW);
-    middle.removeFromRight(s(14));
-
-    const int slotGap = s(12);
-    auto leftTop = leftCol.removeFromTop((leftCol.getHeight() - slotGap) / 2);
-    leftCol.removeFromTop(slotGap);
-    slots_[2]->setBounds(leftTop); // TL
-    slots_[0]->setBounds(leftCol); // BL
-
-    auto rightTop = rightCol.removeFromTop((rightCol.getHeight() - slotGap) / 2);
-    rightCol.removeFromTop(slotGap);
-    slots_[3]->setBounds(rightTop); // TR
-    slots_[1]->setBounds(rightCol); // BR
-
-    pad_.setBounds(middle);
-
-    // Bottom strip: EQ faders (left) | divider | input/output (right).
-    auto strip = bottomStrip.reduced(s(20), s(16));
-    auto ioBlock = strip.removeFromRight(s(120));
-    strip.removeFromRight(s(14));
-    bottomStripDividerX_ = strip.getRight();
-    strip.removeFromRight(s(14));
-
-    const int eqW = strip.getWidth() / 4;
-    auto layoutEq = [&](mrta::ParameterSlider& slider, juce::Label& label, juce::Rectangle<int> col) {
-        auto labelArea = col.removeFromBottom(s(16));
-        col.removeFromBottom(s(8));
-        const int faderW = juce::jmax(20, s(26));
-        slider.setBounds(col.withSizeKeepingCentre(faderW, col.getHeight()));
-        label.setBounds(labelArea);
-    };
-    layoutEq(eqBass_, eqLabels_[0], strip.removeFromLeft(eqW));
-    layoutEq(eqMid_, eqLabels_[1], strip.removeFromLeft(eqW));
-    layoutEq(eqTreble_, eqLabels_[2], strip.removeFromLeft(eqW));
-    layoutEq(eqPresence_, eqLabels_[3], strip);
-
-    const int knobW = ioBlock.getWidth() / 2;
-    auto layoutIo = [&](mrta::ParameterSlider& knob, LcdReadout& lcd, juce::Label& label,
-                       juce::Rectangle<int> col) {
-        auto knobArea = col.removeFromTop(s(48));
-        col.removeFromTop(s(6));
-        auto lcdArea = col.removeFromTop(s(22));
-        col.removeFromTop(s(6));
-        knob.setBounds(knobArea.withSizeKeepingCentre(s(46), s(46)));
-        lcd.setBounds(lcdArea.reduced(s(2), 0));
-        label.setBounds(col);
-    };
-    layoutIo(inputGain_, inputLcd_, inputLabel_, ioBlock.removeFromLeft(knobW));
-    layoutIo(outputGain_, outputLcd_, outputLabel_, ioBlock);
-
     library_.setBounds(getLocalBounds());
+
+    // --- Knob row: 5 main knobs, a divider, then Output -----------------
+    knobRowBounds_ = knobRow.toFloat();
+    {
+        auto knobs = knobRow.reduced(22, 0);
+        constexpr int kNumSlots = 7; // 5 main knobs + divider + Output
+        const int slotW = knobs.getWidth() / kNumSlots;
+
+        auto placeKnob = [&](mrta::ParameterSlider& knob, juce::Label& label, juce::Label& value) {
+            auto slot = knobs.removeFromLeft(slotW);
+            auto col = slot.withSizeKeepingCentre(juce::jmin(70, slot.getWidth()), 98);
+            label.setBounds(col.removeFromTop(13));
+            col.removeFromTop(7);
+            knob.setBounds(col.removeFromTop(56).withSizeKeepingCentre(56, 56));
+            col.removeFromTop(7);
+            value.setBounds(col);
+        };
+        placeKnob(inputGain_, knobLabels_[0], knobValues_[0]);
+        placeKnob(eqBass_, knobLabels_[1], knobValues_[1]);
+        placeKnob(eqMid_, knobLabels_[2], knobValues_[2]);
+        placeKnob(eqTreble_, knobLabels_[3], knobValues_[3]);
+        placeKnob(eqPresence_, knobLabels_[4], knobValues_[4]);
+        knobDividerX_ = static_cast<float>(knobs.removeFromLeft(slotW).getCentreX());
+        placeKnob(outputGain_, knobLabels_[5], knobValues_[5]);
+    }
+
+    // --- CAB IR bar -------------------------------------------------------
+    cabBarBounds_ = cabBar.toFloat();
+    {
+        auto cab = cabBar.reduced(12, 0);
+        cabLabel_.setBounds(cab.removeFromLeft(50));
+        cab.removeFromLeft(10);
+        cabDividerX_ = static_cast<float>(cab.getX());
+        cab.removeFromLeft(1 + 10);
+        cabToggle_.setBounds(cab.removeFromRight(38).withSizeKeepingCentre(38, 19));
+        cab.removeFromRight(10);
+        cabName_.setBounds(cab);
+    }
 }
 
 } // namespace aaom

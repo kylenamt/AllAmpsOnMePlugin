@@ -8,6 +8,9 @@ namespace aaom
 
 namespace
 {
+const juce::String kSearchGlyph(juce::CharPointer_UTF8("\xe2\x8c\x95")); // U+2315
+const juce::String kCloseGlyph(juce::CharPointer_UTF8("\xc3\x97"));      // U+00D7
+
 // Matches MorphEngine's corner weight order: 0=BL, 1=BR, 2=TL, 3=TR.
 juce::String tagFor(int index)
 {
@@ -19,51 +22,74 @@ juce::String tagFor(int index)
         default: return "TR";
     }
 }
+
+juce::String labelFor(int index)
+{
+    // Middot-separated, matching the design handoff's CORNER_LABEL strings.
+    static const juce::String dot(juce::CharPointer_UTF8("\xc2\xb7"));
+    switch (index)
+    {
+        case 0: return "BOTTOM " + dot + " LEFT";
+        case 1: return "BOTTOM " + dot + " RIGHT";
+        case 2: return "TOP " + dot + " LEFT";
+        default: return "TOP " + dot + " RIGHT";
+    }
+}
 } // namespace
 
 ProfileLibrary::ProfileLibrary(AAOMProcessor& processor)
 : proc_(processor)
 {
+    using namespace palette;
+
     setAlwaysOnTop(true);
     setVisible(false);
     setWantsKeyboardFocus(true);
 
     title_.setText("PROFILE LIBRARY", juce::dontSendNotification);
-    title_.setFont(juce::Font(16.0f, juce::Font::bold).withExtraKerningFactor(0.04f));
-    title_.setColour(juce::Label::textColourId, palette::textEngraved);
+    title_.setFont(juce::Font(14.0f, juce::Font::plain).withExtraKerningFactor(0.14f));
+    title_.setColour(juce::Label::textColourId, textPrimary);
     addAndMakeVisible(title_);
 
-    subtitle_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::plain)
-                          .withExtraKerningFactor(0.1f));
-    subtitle_.setColour(juce::Label::textColourId, palette::accentHardware);
+    subtitle_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 9.5f, juce::Font::plain)
+                          .withExtraKerningFactor(0.13f));
+    subtitle_.setColour(juce::Label::textColourId, cyan);
     addAndMakeVisible(subtitle_);
 
-    close_.setComponentID("close");
-    close_.setColour(juce::TextButton::buttonColourId, juce::Colour(0xff3a352e));
-    close_.setColour(juce::TextButton::textColourOffId, palette::textLight);
+    close_.setButtonText(kCloseGlyph);
+    close_.setComponentID("icon");
+    close_.setColour(juce::TextButton::textColourOffId, textSecondary);
     close_.onClick = [this] { close(); };
     addAndMakeVisible(close_);
 
     search_.setMultiLine(false);
     search_.setEscapeAndReturnKeysConsumed(false);
-    search_.setTextToShowWhenEmpty("SEARCH AMPS...", palette::textFaint);
-    search_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 13.0f, juce::Font::plain));
-    search_.setColour(juce::TextEditor::textColourId, palette::lcdGreenText);
-    search_.setColour(juce::TextEditor::highlightColourId, palette::accentHardware.withAlpha(0.4f));
+    search_.setTextToShowWhenEmpty("SEARCH AMPS...", textMuted);
+    search_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.5f, juce::Font::plain));
     search_.setIndents(22, 0);
     search_.addListener(this);
     addAndMakeVisible(search_);
+
+    // Added after search_ so it paints on top of the field's own opaque
+    // background; setIndents() above reserves the room for it.
+    searchIcon_.setText(kSearchGlyph, juce::dontSendNotification);
+    searchIcon_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 12.0f, juce::Font::plain));
+    searchIcon_.setColour(juce::Label::textColourId, cyan);
+    searchIcon_.setJustificationType(juce::Justification::centredLeft);
+    searchIcon_.setInterceptsMouseClicks(false, false);
+    addAndMakeVisible(searchIcon_);
 
     list_.setModel(this);
     list_.setRowHeight(46);
     addAndMakeVisible(list_);
 
-    shownCount_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::plain));
-    shownCount_.setColour(juce::Label::textColourId, palette::textDim);
+    shownCount_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 9.5f, juce::Font::plain)
+                            .withExtraKerningFactor(0.12f));
+    shownCount_.setColour(juce::Label::textColourId, textMuted);
     addAndMakeVisible(shownCount_);
 
-    totalCount_.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 10.0f, juce::Font::plain));
-    totalCount_.setColour(juce::Label::textColourId, palette::textDim);
+    totalCount_.setFont(shownCount_.getFont());
+    totalCount_.setColour(juce::Label::textColourId, textMuted);
     totalCount_.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(totalCount_);
 }
@@ -77,8 +103,7 @@ void ProfileLibrary::open(int targetCorner)
 {
     target_ = targetCorner;
 
-    static const char* const labels[4] = {"BOTTOM - LEFT", "BOTTOM - RIGHT", "TOP - LEFT", "TOP - RIGHT"};
-    const juce::String label = (targetCorner >= 0 && targetCorner < 4) ? labels[targetCorner] : juce::String();
+    const juce::String label = (targetCorner >= 0 && targetCorner < 4) ? labelFor(targetCorner) : juce::String();
     subtitle_.setText(juce::String("LOADING TO ") + label, juce::dontSendNotification);
 
     search_.clear();
@@ -124,7 +149,7 @@ int ProfileLibrary::getNumRows()
     return static_cast<int>(filtered_.size());
 }
 
-void ProfileLibrary::paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool rowIsSelected)
+void ProfileLibrary::paintListBoxItem(int rowNumber, juce::Graphics& g, int width, int height, bool)
 {
     using namespace palette;
     if (rowNumber < 0 || rowNumber >= static_cast<int>(filtered_.size()))
@@ -135,25 +160,21 @@ void ProfileLibrary::paintListBoxItem(int rowNumber, juce::Graphics& g, int widt
     const bool isCurrent = target_ >= 0 && proc_.corner(target_).assigned && proc_.corner(target_).name == name;
 
     const auto bounds = juce::Rectangle<float>(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height))
-                            .reduced(4.0f, 2.5f);
+                            .reduced(3.0f, 3.0f);
 
     if (isCurrent)
     {
-        juce::ColourGradient grad(accentHardware.withAlpha(0.28f), bounds.getX(), 0.0f,
-                                  accentHardware.withAlpha(0.1f), bounds.getRight(), 0.0f, false);
-        g.setGradientFill(grad);
-        g.fillRoundedRectangle(bounds, 7.0f);
-        g.setColour(accentHardware);
-        g.drawRoundedRectangle(bounds.reduced(0.5f), 7.0f, 1.2f);
+        g.setColour(cyan.withAlpha(0.14f));
+        g.fillRect(bounds);
+        g.setColour(cyan.withAlpha(0.5f));
+        g.drawRect(bounds, 1.0f);
     }
     else
     {
-        juce::ColourGradient grad(juce::Colour(0xff241f1a), bounds.getX(), bounds.getY(), juce::Colour(0xff1e1a15),
-                                  bounds.getX(), bounds.getBottom(), false);
-        g.setGradientFill(grad);
-        g.fillRoundedRectangle(bounds, 7.0f);
-        g.setColour(rowIsSelected ? accentHardware : inkBorder);
-        g.drawRoundedRectangle(bounds.reduced(0.5f), 7.0f, 1.0f);
+        g.setColour(listRowBg);
+        g.fillRect(bounds);
+        g.setColour(juce::Colours::black.withAlpha(0.6f));
+        g.drawRect(bounds, 1.0f);
     }
 
     juce::String badge;
@@ -166,19 +187,20 @@ void ProfileLibrary::paintListBoxItem(int rowNumber, juce::Graphics& g, int widt
         }
     }
 
-    auto textArea = bounds.reduced(12.0f, 6.0f);
+    auto textArea = bounds.reduced(13.0f, 6.0f);
     auto nameArea = textArea;
     if (badge.isNotEmpty())
-        nameArea.removeFromRight(30.0f);
+        nameArea.removeFromRight(34.0f);
 
-    g.setColour(textName);
-    g.setFont(juce::Font(13.0f, juce::Font::bold));
+    g.setColour(isCurrent ? cyanLight : textPrimary);
+    g.setFont(juce::Font(12.5f, juce::Font::plain));
     g.drawText(name, nameArea.toNearestInt(), juce::Justification::centredLeft, true);
 
     if (badge.isNotEmpty())
     {
-        g.setColour(accentHardware);
-        g.setFont(juce::Font(9.0f, juce::Font::bold).withExtraKerningFactor(0.1f));
+        g.setColour(cyan);
+        g.setFont(juce::Font(juce::Font::getDefaultMonospacedFontName(), 9.0f, juce::Font::plain)
+                     .withExtraKerningFactor(0.13f));
         g.drawText(badge, textArea.toNearestInt(), juce::Justification::centredRight, false);
     }
 }
@@ -213,25 +235,26 @@ void ProfileLibrary::resized()
 {
     const auto full = getLocalBounds();
     const int dialogW = juce::jmin(560, static_cast<int>(static_cast<float>(full.getWidth()) * 0.92f));
-    const int dialogH = static_cast<int>(static_cast<float>(full.getHeight()) * 0.82f);
+    const int dialogH = juce::jmin(560, static_cast<int>(static_cast<float>(full.getHeight()) * 0.9f));
     const auto dialog = juce::Rectangle<int>(0, 0, dialogW, dialogH).withCentre(full.getCentre());
     dialogBounds_ = dialog.toFloat();
 
     auto r = dialog;
-    auto header = r.removeFromTop(64).reduced(18, 12);
-    close_.setBounds(header.removeFromRight(30).withSizeKeepingCentre(30, 30));
+    auto header = r.removeFromTop(64).reduced(16, 14);
+    close_.setBounds(header.removeFromRight(26).withSizeKeepingCentre(26, 26));
     header.removeFromRight(8);
-    title_.setBounds(header.removeFromTop(20));
+    title_.setBounds(header.removeFromTop(18));
     subtitle_.setBounds(header);
 
-    auto searchBlock = r.removeFromTop(58).reduced(18, 12);
+    auto searchBlock = r.removeFromTop(58).reduced(16, 12);
     search_.setBounds(searchBlock);
+    searchIcon_.setBounds(searchBlock.withTrimmedLeft(11).withWidth(20));
 
-    auto footer = r.removeFromBottom(36).reduced(18, 0);
+    auto footer = r.removeFromBottom(37).reduced(16, 0);
     shownCount_.setBounds(footer.removeFromLeft(footer.getWidth() / 2));
     totalCount_.setBounds(footer);
 
-    list_.setBounds(r.reduced(8));
+    list_.setBounds(r.reduced(0, 4));
 }
 
 void ProfileLibrary::paint(juce::Graphics& g)
@@ -243,50 +266,37 @@ void ProfileLibrary::paint(juce::Graphics& g)
         return;
 
     const auto d = dialogBounds_;
-    juce::ColourGradient dialogGrad(chassisTop, d.getX(), d.getY(), panelBottom, d.getX(), d.getBottom(), false);
-    g.setGradientFill(dialogGrad);
-    g.fillRoundedRectangle(d, 14.0f);
-
-    g.saveState();
-    juce::Path clip;
-    clip.addRoundedRectangle(d, 14.0f);
-    g.reduceClipRegion(clip);
+    g.setColour(shell);
+    g.fillRect(d);
 
     const auto headerRect = d.withHeight(64.0f);
-    juce::ColourGradient headerGrad(juce::Colour(0xff3a352e), headerRect.getX(), headerRect.getY(), panelBottom,
+    juce::ColourGradient headerGrad(shellLeadTop, headerRect.getX(), headerRect.getY(), shellLeadBottom,
                                     headerRect.getX(), headerRect.getBottom(), false);
     g.setGradientFill(headerGrad);
     g.fillRect(headerRect);
-    g.setColour(inkBorder);
+    g.setColour(juce::Colours::black.withAlpha(0.6f));
     g.drawHorizontalLine(juce::roundToInt(headerRect.getBottom()), d.getX(), d.getRight());
 
     const auto searchRect = juce::Rectangle<float>(d.getX(), headerRect.getBottom(), d.getWidth(), 58.0f);
-    g.setColour(juce::Colour(0xff241f1a));
+    g.setColour(searchBarBg);
     g.fillRect(searchRect);
+    g.setColour(juce::Colours::black.withAlpha(0.6f));
+    g.drawHorizontalLine(juce::roundToInt(searchRect.getBottom()), d.getX(), d.getRight());
 
-    const auto footerRect = juce::Rectangle<float>(d.getX(), d.getBottom() - 36.0f, d.getWidth(), 36.0f);
-    g.setColour(panelDeep);
+    const auto footerRect = juce::Rectangle<float>(d.getX(), d.getBottom() - 37.0f, d.getWidth(), 37.0f);
+    g.setColour(listBody);
     g.fillRect(juce::Rectangle<float>(d.getX(), searchRect.getBottom(), d.getWidth(),
                                       footerRect.getY() - searchRect.getBottom()));
 
-    juce::ColourGradient footerGrad(panelTop, footerRect.getX(), footerRect.getY(), panelBottom, footerRect.getX(),
-                                    footerRect.getBottom(), false);
+    juce::ColourGradient footerGrad(shellLightTop, footerRect.getX(), footerRect.getY(), shellLightBottom,
+                                    footerRect.getX(), footerRect.getBottom(), false);
     g.setGradientFill(footerGrad);
     g.fillRect(footerRect);
-    g.setColour(inkBorder);
+    g.setColour(juce::Colours::white.withAlpha(0.06f));
     g.drawHorizontalLine(juce::roundToInt(footerRect.getY()), d.getX(), d.getRight());
 
-    g.restoreState();
-    g.setColour(inkBorder);
-    g.drawRoundedRectangle(d.reduced(0.5f), 14.0f, 1.0f);
-
-    // Magnifying glass, drawn beside the search field (the field's own text
-    // is indented via setIndents() to leave room for it).
-    const auto searchBounds = search_.getBounds().toFloat();
-    const auto glassCentre = juce::Point<float>(searchBounds.getX() + 9.0f, searchBounds.getCentreY() - 1.0f);
-    g.setColour(juce::Colour(0xff6f8a3f));
-    g.drawEllipse(juce::Rectangle<float>(8.0f, 8.0f).withCentre(glassCentre), 1.5f);
-    g.drawLine(glassCentre.x + 2.6f, glassCentre.y + 2.6f, glassCentre.x + 6.0f, glassCentre.y + 6.0f, 1.6f);
+    g.setColour(juce::Colours::black.withAlpha(0.7f));
+    g.drawRect(d, 1.0f);
 }
 
 } // namespace aaom

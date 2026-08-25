@@ -2,16 +2,25 @@
 
 // MorphEngine — the real-time morph layer on top of MorphModel (JUCE-free).
 //
-// Holds up to 4 "corner" embeddings arranged on a 2D XY pad. A dot at (x,y) in
-// [0,1]^2 bilinearly blends the assigned corners; the result is hot-swapped onto
-// the live NAM WaveNet. All per-block work is preallocated and allocation-free.
+// Holds up to 4 "corner" embeddings arranged on a 2D XY pad. A dot at (x,y)
+// bilinearly blends the assigned corners; the result is hot-swapped onto the
+// live NAM WaveNet. All per-block work is preallocated and allocation-free.
+//
+// (x,y) range over [-1,2], not just [0,1]: the corners live at the unit square
+// as before, but the dot may leave it to linearly *extrapolate* past a corner
+// (weights go negative), the 2D generalisation of x*a + (1-x)*b for x outside
+// [0,1].
 //
 // The blend happens in *weight* space, not embedding space. MorphModel's fold is
 // affine in the embedding (FiLM: gamma(e) is affine and scales W; delta: W+dW(e)
 // with dW affine), and affine maps commute with affine combinations, so for
-// bilinear weights w_i summing to 1:
+// bilinear weights w_i summing to 1 (true for *any* real x,y -- the four corner
+// polynomials sum to 1 identically, not just inside the unit square):
 //
 //     fold( sum_i w_i * corner_i )  ==  sum_i w_i * fold(corner_i)     exactly
+//
+// so the fold-once/blend-per-block optimisation below stays exact under
+// extrapolation too.
 //
 // So each corner is folded *once*, when it is assigned, and every block does a
 // 4-way weighted sum of the cached streams instead of a full fold. That is ~2x
@@ -71,7 +80,8 @@ public:
     void queueCorner(int index, const std::vector<float>& embedding);
     void queueClear(int index);
 
-    // Set the dot position (audio thread safe). Clamped to [0,1].
+    // Set the dot position (audio thread safe). Clamped to [-1,2] -- [0,1] is
+    // the corner square, the rest is linear extrapolation past it.
     void setMorph(float x, float y);
 
     // One-pole smoothing time constant for the embedding morph.

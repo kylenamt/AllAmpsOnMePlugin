@@ -51,8 +51,11 @@ private:
 
     juce::Label title_;
     juce::Label subtitle_;
-    juce::TextButton close_{"X"};
+    juce::TextButton close_;
     juce::TextEditor search_;
+    juce::Label searchIcon_; // painted on top of search_ (added after it), since
+                             // the editor's own opaque background would otherwise
+                             // cover a glyph drawn underneath it in paint()
     juce::ListBox list_{"profiles", nullptr};
     juce::Label shownCount_;
     juce::Label totalCount_;

@@ -22,6 +22,8 @@ static const juce::String inputGain{"InputGain"};
 static const juce::String outputGain{"OutputGain"};
 static const juce::String morphX{"MorphX"};
 static const juce::String morphY{"MorphY"};
+static const juce::String morphRange{"MorphRange"};
+static const juce::String morphSmooth{"MorphSmooth"};
 static const juce::String eqBass{"EqBass"};
 static const juce::String eqMid{"EqMid"};
 static const juce::String eqTreble{"EqTreble"};

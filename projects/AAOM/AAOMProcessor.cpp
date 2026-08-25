@@ -199,8 +199,14 @@ static std::vector<mrta::ParameterInfo> makeParameters()
     return {
         {pid::inputGain, "Input", "dB", 0.0f, -24.0f, 24.0f, 0.1f, 1.0f},
         {pid::outputGain, "Output", "dB", 0.0f, -24.0f, 24.0f, 0.1f, 1.0f},
-        {pid::morphX, "Morph X", "", 0.5f, 0.0f, 1.0f, 0.001f, 1.0f},
-        {pid::morphY, "Morph Y", "", 0.5f, 0.0f, 1.0f, 0.001f, 1.0f},
+        // Range extends past the [0,1] corner square so the pad can extrapolate;
+        // see MorphPad/MorphEngine. The outer [-1,2] bound is fixed (it is
+        // MorphRange's own max, r=1.00); MorphRange itself only governs how far
+        // the pad *UI* lets you drag, not this parameter's own bounds.
+        {pid::morphX, "Morph X", "", 0.5f, -1.0f, 2.0f, 0.001f, 1.0f},
+        {pid::morphY, "Morph Y", "", 0.5f, -1.0f, 2.0f, 0.001f, 1.0f},
+        {pid::morphRange, "Range", "", 0.5f, 0.10f, 1.00f, 0.05f, 1.0f},
+        {pid::morphSmooth, "Smooth", "ms", 18.0f, 2.0f, 120.0f, 1.0f, 1.0f},
         // EQ: post-model tone stack, see ParametricEqualizer eq_ in AAOMProcessor.
         // Detented in 1 dB steps (25 positions over the +/-12 dB range) so the
         // faders click into place like a hardware tone stack rather than sweeping
@@ -236,6 +242,9 @@ AAOMProcessor::AAOMProcessor()
 
     registerParameterCallback(pid::morphX, [this](float v, bool) { morphX_.store(v); });
     registerParameterCallback(pid::morphY, [this](float v, bool) { morphY_.store(v); });
+    // MorphRange has no processor-side effect -- it only governs how far the
+    // editor's pad lets you drag; see gui/MorphPad.
+    registerParameterCallback(pid::morphSmooth, [this](float v, bool) { engine_.setSmoothingTimeMs(v); });
 
     // Fixed tone-stack shape (classic amp-style bands); only gain is
     // automatable per band, matching the EqBass/Mid/Treble/Presence knobs.
