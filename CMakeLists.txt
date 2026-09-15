@@ -71,7 +71,9 @@ juce_add_binary_data(amp_morph_bundle SOURCES
     "${aaom_source}/assets/nam_a2_256/nam_a2_256_bundle.json"
     "${aaom_source}/assets/nam_a2_256/nam_a2_256_profiles.json"
     "${aaom_source}/assets/wavenet_a2/bundle.json"
-    "${aaom_source}/assets/wavenet_a2/profiles.json")
+    "${aaom_source}/assets/wavenet_a2/profiles.json"
+    "${aaom_source}/assets/delta_a2_v2/delta_a2_tanh_r32_512_v2_bundle.json"
+    "${aaom_source}/assets/delta_a2_v2/delta_a2_tanh_r32_512_v2_profiles.json")
 
 add_plugin(amp_morph
     VERSION 0.1.0

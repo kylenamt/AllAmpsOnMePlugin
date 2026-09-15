@@ -48,6 +48,7 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
 , eqTreble_(pid::eqTreble, processor.getParameterManager().getAPVTS())
 , eqPresence_(pid::eqPresence, processor.getParameterManager().getAPVTS())
 , outputGain_(pid::outputGain, processor.getParameterManager().getAPVTS())
+, slerpToggle_(pid::morphSlerp, processor.getParameterManager().getAPVTS())
 , cabToggle_(pid::cabOn, processor.getParameterManager().getAPVTS())
 {
     setLookAndFeel(&lookAndFeel_);
@@ -123,6 +124,17 @@ AAOMEditor::AAOMEditor(AAOMProcessor& processor)
     smoothValue_.setJustificationType(juce::Justification::centredRight);
     addAndMakeVisible(smoothValue_);
     smoothSlider_.onValueChange();
+
+    // SLERP row: only some models' embeddings live on a fixed-radius sphere
+    // (MorphModel::embeddingsNormalized()), so this starts hidden and
+    // refreshModelChip() shows it only when the live model supports it.
+    styleSideLabel(slerpLabel_, "SLERP");
+    addChildComponent(slerpLabel_);
+    slerpToggle_.setComponentID("slerpSwitch");
+    slerpToggle_.setButtonText({});
+    slerpToggle_.setTooltip("Blend this model's corner embeddings along the great-circle geodesic "
+                            "(spherical) instead of the straight line between them.");
+    addChildComponent(slerpToggle_);
 
     // Knob row.
     static const char* const kKnobLabels[6] = {"Input", "Bass", "Mid", "Treble", "Presence", "Output"};
@@ -262,6 +274,10 @@ void AAOMEditor::refreshModelChip()
 
         presetChip_.setTextColour(warned ? palette::negativeText : palette::cyan);
         presetChip_.setTooltip(status);
+
+        const bool slerpCapable = m->embeddingsNormalized();
+        slerpLabel_.setVisible(slerpCapable);
+        slerpToggle_.setVisible(slerpCapable);
     }
     else
     {
@@ -269,6 +285,9 @@ void AAOMEditor::refreshModelChip()
                                                                     : juce::String("No model loaded");
         presetChip_.setTextColour(palette::negativeText);
         presetChip_.setTooltip(error + "\n\nClick to switch model.");
+
+        slerpLabel_.setVisible(false);
+        slerpToggle_.setVisible(false);
     }
 
     // A new model brings a new catalogue and freshly reseeded corners.
@@ -693,10 +712,16 @@ void AAOMEditor::resized()
     {
         auto controls = rightCol.reduced(13, 11);
         constexpr int kRowH = 20;
-        auto centred = controls.withSizeKeepingCentre(controls.getWidth(), kRowH * 2 + 11);
+        // Third row (SLERP) is laid out unconditionally -- it just stays
+        // invisible via addChildComponent() for a model that doesn't support
+        // it -- so this block's height/position don't depend on which model
+        // is loaded.
+        auto centred = controls.withSizeKeepingCentre(controls.getWidth(), kRowH * 3 + 11 * 2);
         auto rangeRow = centred.removeFromTop(kRowH);
         centred.removeFromTop(11);
-        auto smoothRow = centred;
+        auto smoothRow = centred.removeFromTop(kRowH);
+        centred.removeFromTop(11);
+        auto slerpRow = centred;
 
         auto layoutRow = [](juce::Rectangle<int> row, juce::Label& label, juce::Component& slider,
                             juce::Label& value) {
@@ -708,6 +733,10 @@ void AAOMEditor::resized()
         };
         layoutRow(rangeRow, rangeLabel_, rangeSlider_, rangeValue_);
         layoutRow(smoothRow, smoothLabel_, smoothSlider_, smoothValue_);
+
+        slerpLabel_.setBounds(slerpRow.removeFromLeft(50));
+        slerpRow.removeFromLeft(11);
+        slerpToggle_.setBounds(slerpRow.removeFromRight(38).withSizeKeepingCentre(38, 19));
     }
 
     library_.setBounds(getLocalBounds());

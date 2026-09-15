@@ -33,6 +33,20 @@
 // and re-folding; it additionally smooths a *corner reassignment*, which an
 // embedding-space smoother would step through discontinuously.
 //
+// Spherical (SLERP) mode -- setUseSlerp(), gated by the model itself via
+// MorphModel::embeddingsNormalized() -- blends corners along the great-circle
+// geodesic instead of the chord, which matters for a run whose embeddings were
+// trained/exported to live on a fixed-radius hypersphere: linear blending cuts
+// through the interior of that sphere and its extrapolation runs off it
+// immediately, whereas SLERP's extrapolation continues along the same arc.
+// SLERP is *not* affine, so it breaks the fold/blend commutativity above --
+// blending folded corners is no longer equal to folding the blended embedding.
+// So this mode cannot reuse the cheap weight-space blend: it blends corner
+// *embeddings* (nested pairwise SLERP, matching the bilinear weight structure)
+// and re-folds the result on every dot/corner change instead of every corner
+// assignment. Corners are still folded into foldedCorners_ unconditionally so
+// toggling back to linear is instant, without re-folding.
+//
 // Threading: prepare() builds the DSP off the audio thread. setMorph() and
 // setCorner*/clearCorner may be called from the audio thread (e.g. from MRTA
 // parameter callbacks) — they only touch engine-owned buffers. processBlock()
@@ -87,6 +101,13 @@ public:
     // One-pole smoothing time constant for the embedding morph.
     void setSmoothingTimeMs(float ms);
 
+    // Enable spherical (SLERP) blending in place of the default linear blend.
+    // Audio-thread safe (see Threading above); only takes effect once the live
+    // model reports embeddingsNormalized() -- see MorphModel -- so setting it
+    // for a model that doesn't support it is a harmless no-op.
+    void setUseSlerp(bool enabled) { useSlerp_ = enabled; }
+    bool useSlerp() const { return useSlerp_; }
+
     // Process num_frames mono samples. Re-blends/hot-swaps weights first if the
     // dot or a corner has moved. in may equal out.
     void processBlock(NAM_SAMPLE* in, NAM_SAMPLE* out, int numFrames);
@@ -102,6 +123,17 @@ private:
     // blendTarget_ = sum_i w[i] * foldedCorners_[i]; caches w into lastBlendW_.
     void rebuildBlendTarget(const float (&w)[kNumCorners]);
 
+    // Spherical counterpart of rebuildBlendTarget(): nested pairwise SLERP of
+    // the raw corner embeddings into target_, then a full re-fold into
+    // blendTarget_ (no cached-stream shortcut available here -- see the class
+    // doc). Also caches w into lastBlendW_ so the two modes share one "did
+    // the blend move" trigger in processBlock()/prepare().
+    void rebuildBlendTargetSlerp(const float (&w)[kNumCorners]);
+
+    // useSlerp_ gated by the model's own capability, so a stale/automated
+    // setting for a model that doesn't support it is silently inert.
+    bool slerpActive() const { return useSlerp_ && model_ != nullptr && model_->embeddingsNormalized(); }
+
     void computeTarget();          // fills target_ from corners + (x_,y_); prepare() only
 
     std::unique_ptr<MorphModel> model_;
@@ -115,6 +147,11 @@ private:
     CornerFifo cornerFifo_;
 
     std::vector<float> target_;    // E; only prepare() needs the embedding itself
+    // Scratch for rebuildBlendTargetSlerp()'s nested SLERP: bottom row
+    // (corners 0,1) and top row (corners 2,3) each collapse to one E-vector
+    // before the final SLERP between them. E-sized, preallocated by setModel().
+    std::vector<float> slerpBottomScratch_;
+    std::vector<float> slerpTopScratch_;
 
     // Weight-space state, all namWeightCount() long and preallocated by setModel().
     std::array<std::vector<float>, kNumCorners> foldedCorners_;
@@ -123,6 +160,10 @@ private:
     float lastBlendW_[kNumCorners] = {0.0f, 0.0f, 0.0f, 0.0f};
     bool blendValid_ = false; // lastBlendW_/blendTarget_ reflect the current corners
     bool settled_ = true;     // currentWeights_ == blendTarget_, nothing to push
+    bool useSlerp_ = false;   // see setUseSlerp()/slerpActive()
+    // slerpActive() at the last rebuild. A toggle flip alone doesn't change
+    // (x_,y_) or the corners, so lastBlendW_ can't detect it; this catches it.
+    bool lastUsedSlerp_ = false;
 
     float x_ = 0.5f;
     float y_ = 0.5f;

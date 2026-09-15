@@ -24,6 +24,10 @@ static const juce::String morphX{"MorphX"};
 static const juce::String morphY{"MorphY"};
 static const juce::String morphRange{"MorphRange"};
 static const juce::String morphSmooth{"MorphSmooth"};
+// Spherical (SLERP) vs linear corner blending. Only takes effect for a model
+// whose embeddings are normalised (MorphModel::embeddingsNormalized()); the
+// editor hides the control and MorphEngine ignores the setting otherwise.
+static const juce::String morphSlerp{"MorphSlerp"};
 static const juce::String eqBass{"EqBass"};
 static const juce::String eqMid{"EqMid"};
 static const juce::String eqTreble{"EqTreble"};

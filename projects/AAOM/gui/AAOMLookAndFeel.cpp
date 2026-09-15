@@ -136,6 +136,18 @@ void AAOMLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int widt
     g.drawEllipse(juce::Rectangle<float>(thumbD, thumbD).withCentre(thumbCentre), 1.0f);
 }
 
+namespace
+{
+// Buttons drawn as a physical pill switch (no label, gradient track + round
+// knob) rather than the default small square text button -- set via
+// setComponentID() on each mrta::ParameterButton instance that wants this.
+bool isPillSwitch(const juce::Button& button)
+{
+    const auto id = button.getComponentID();
+    return id == "cabSwitch" || id == "slerpSwitch";
+}
+} // namespace
+
 void AAOMLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
                                            bool isHighlighted, bool isDown)
 {
@@ -143,7 +155,7 @@ void AAOMLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& butt
 
     const auto bounds = button.getLocalBounds().toFloat();
 
-    if (button.getComponentID() == "cabSwitch")
+    if (isPillSwitch(button))
     {
         const bool on = button.getToggleState();
         const float radius = bounds.getHeight() * 0.5f;
@@ -173,7 +185,7 @@ void AAOMLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& butt
 
 void AAOMLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool)
 {
-    if (button.getComponentID() == "cabSwitch")
+    if (isPillSwitch(button))
         return; // pill switch carries no label
 
     const auto bounds = button.getLocalBounds();

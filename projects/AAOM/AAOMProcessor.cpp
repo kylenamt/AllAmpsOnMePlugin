@@ -6,6 +6,7 @@
 #include <cstring>
 #include <exception>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <utility>
 
@@ -49,6 +50,14 @@ const BuiltInModel kBuiltInModels[] = {
     // Original 128-dim run, kept so existing sessions can still resolve it.
     {"wavenet_a2", "WaveNet A2 128", BinaryData::bundle_json, BinaryData::bundle_jsonSize,
      BinaryData::profiles_json, BinaryData::profiles_jsonSize},
+    // Same delta_wavenet_a2 architecture as delta_a2, retrained with its
+    // embeddings normalised to a fixed-radius hypersphere (a constant scale
+    // baked in at export time) -- detected at load time via
+    // detectNormalizedEmbeddings() below, which is what offers SLERP morphing
+    // for this run in the editor.
+    {"delta_a2_v2", "Delta A2 Tanh 512 v2", BinaryData::delta_a2_tanh_r32_512_v2_bundle_json,
+     BinaryData::delta_a2_tanh_r32_512_v2_bundle_jsonSize, BinaryData::delta_a2_tanh_r32_512_v2_profiles_json,
+     BinaryData::delta_a2_tanh_r32_512_v2_profiles_jsonSize},
 };
 
 constexpr int kNumBuiltInModels = static_cast<int>(std::size(kBuiltInModels));
@@ -139,6 +148,41 @@ std::vector<CornerInfo> parseCatalogue(const juce::String& text, int modelDim, c
     return out;
 }
 
+// Detects whether a model's embeddings live on a fixed-radius hypersphere (see
+// MorphModel::embeddingsNormalized()) by checking the spread of L2 norms
+// across its catalogue. The bundle JSON never declares this -- it's an
+// artefact of how the run was trained/exported -- so it's inferred here, once
+// per bundle load, and cached on the model rather than recomputed. A real
+// normalised export (delta_a2_v2's profiles all land within a few 1e-4
+// relative of each other) is nowhere close to an un-normalised one (which
+// varies by 2x or more), so a generous threshold still separates them
+// cleanly. Too small a catalogue to say anything meaningful reports false.
+bool detectNormalizedEmbeddings(const std::vector<CornerInfo>& catalogue)
+{
+    constexpr std::size_t kMinSamples = 8;
+    constexpr double kRelativeSpreadThreshold = 0.02; // real data ~1e-4; un-normalised is ~100%+
+
+    if (catalogue.size() < kMinSamples)
+        return false;
+
+    double minNorm = std::numeric_limits<double>::max();
+    double maxNorm = 0.0;
+    for (const auto& c : catalogue)
+    {
+        double sumSq = 0.0;
+        for (float v : c.embedding)
+            sumSq += double(v) * double(v);
+        const double n = std::sqrt(sumSq);
+        minNorm = std::min(minNorm, n);
+        maxNorm = std::max(maxNorm, n);
+    }
+
+    if (maxNorm < 1.0e-9)
+        return false;
+
+    return (maxNorm - minNorm) / maxNorm < kRelativeSpreadThreshold;
+}
+
 // Read an impulse response file into mono floats. A multi-channel file keeps
 // channel 0 rather than being summed: IR packs routinely put several mic
 // positions in one file, and summing those comb-filters them.
@@ -207,6 +251,11 @@ static std::vector<mrta::ParameterInfo> makeParameters()
         {pid::morphY, "Morph Y", "", 0.5f, -1.0f, 2.0f, 0.001f, 1.0f},
         {pid::morphRange, "Range", "", 0.5f, 0.10f, 1.00f, 0.05f, 1.0f},
         {pid::morphSmooth, "Smooth", "ms", 18.0f, 2.0f, 120.0f, 1.0f, 1.0f},
+        // Spherical vs linear corner blending. Automatable like CabOn; inert
+        // (and hidden in the editor) unless the live model's embeddings are
+        // normalised. Defaults on so a normalised model morphs the way it was
+        // trained the first time it's loaded, with no extra step.
+        {pid::morphSlerp, "Slerp", "Linear", "Spherical", true},
         // EQ: post-model tone stack, see ParametricEqualizer eq_ in AAOMProcessor.
         // Detented in 1 dB steps (25 positions over the +/-12 dB range) so the
         // faders click into place like a hardware tone stack rather than sweeping
@@ -245,6 +294,7 @@ AAOMProcessor::AAOMProcessor()
     // MorphRange has no processor-side effect -- it only governs how far the
     // editor's pad lets you drag; see gui/MorphPad.
     registerParameterCallback(pid::morphSmooth, [this](float v, bool) { engine_.setSmoothingTimeMs(v); });
+    registerParameterCallback(pid::morphSlerp, [this](float v, bool) { engine_.setUseSlerp(v > 0.5f); });
 
     // Fixed tone-stack shape (classic amp-style bands); only gain is
     // automatable per band, matching the EqBass/Mid/Treble/Presence knobs.
@@ -359,6 +409,11 @@ bool AAOMProcessor::applyBundle(const juce::String& jsonText, const juce::File& 
     std::vector<CornerInfo> newCatalog = parseCatalogue(catalogueTextFor(source, resolvedIndex),
                                                         parsed->embeddingDim(),
                                                         juce::String(parsed->runSha8()));
+
+    // Detected once here (from the wider catalogue, not the bundle's own
+    // single seed profile) and cached on the model; see
+    // MorphModel::embeddingsNormalized() and detectNormalizedEmbeddings().
+    parsed->setEmbeddingsNormalized(detectNormalizedEmbeddings(newCatalog));
 
     // Corner embeddings are dim- and run-locked to the model that produced them,
     // so the raw vectors cannot carry across a swap — but the *tones* can: each

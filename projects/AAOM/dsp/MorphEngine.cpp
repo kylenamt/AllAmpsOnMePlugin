@@ -10,6 +10,80 @@ namespace
 // Below this the one-pole has effectively arrived: snap, push once more, and stop
 // touching the weights until the dot or a corner moves again.
 constexpr float kSettleEps = 1.0e-9f;
+
+// Below this sin(angle-between-directions) the two directions are close enough
+// to parallel or antiparallel that the great-circle geodesic is numerically
+// ill-defined (the SLERP weights would divide by ~0).
+constexpr float kSlerpSinEps = 1.0e-6f;
+
+// Spherical linear interpolation/extrapolation between two vectors of equal
+// length, generalised to unequal magnitudes: direction is blended along the
+// great-circle geodesic between the two unit directions (the classic SLERP
+// formula, valid for any real t -- t outside [0,1] simply continues along the
+// same arc, which is the extrapolation this is for), magnitude is blended
+// linearly. For same-magnitude inputs (the case this exists for -- corners
+// from a model with embeddingsNormalized()) the two are equal and the result
+// sits exactly on that shared sphere for any t. `out` must not alias `a`/`b`.
+void slerpInto(const float* a, const float* b, int n, float t, float* out)
+{
+    double na2 = 0.0, nb2 = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        na2 += double(a[i]) * double(a[i]);
+        nb2 += double(b[i]) * double(b[i]);
+    }
+    const double na = std::sqrt(na2);
+    const double nb = std::sqrt(nb2);
+
+    if (na < 1.0e-9 || nb < 1.0e-9)
+    {
+        // A (near-)zero corner has no direction to blend against; fall back to
+        // plain linear extrapolation (exact if both are zero, reasonable
+        // otherwise -- real trained embeddings shouldn't hit this).
+        for (int i = 0; i < n; ++i)
+            out[i] = a[i] + t * (b[i] - a[i]);
+        return;
+    }
+
+    double dot = 0.0;
+    for (int i = 0; i < n; ++i)
+        dot += (double(a[i]) / na) * (double(b[i]) / nb);
+    dot = std::clamp(dot, -1.0, 1.0);
+
+    const double theta = std::acos(dot);
+    const double s = std::sin(theta);
+    const double mag = na + double(t) * (nb - na);
+
+    if (s < kSlerpSinEps)
+    {
+        // Directions are (near-)parallel or (near-)antiparallel -- the
+        // geodesic itself is undefined here. Fall back to a normalised linear
+        // blend of direction, still carrying the linear magnitude above.
+        double outN2 = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double d = double(a[i]) / na + double(t) * (double(b[i]) / nb - double(a[i]) / na);
+            out[i] = static_cast<float>(d);
+            outN2 += d * d;
+        }
+        const double outN = std::sqrt(outN2);
+        if (outN > 1.0e-9)
+        {
+            const double scale = mag / outN;
+            for (int i = 0; i < n; ++i)
+                out[i] = static_cast<float>(double(out[i]) * scale);
+        }
+        return;
+    }
+
+    const double wa = std::sin((1.0 - double(t)) * theta) / s;
+    const double wb = std::sin(double(t) * theta) / s;
+    for (int i = 0; i < n; ++i)
+    {
+        const double dir = wa * (double(a[i]) / na) + wb * (double(b[i]) / nb);
+        out[i] = static_cast<float>(dir * mag);
+    }
+}
 } // namespace
 
 void MorphEngine::setModel(std::unique_ptr<MorphModel> model)
@@ -34,6 +108,8 @@ void MorphEngine::setModel(std::unique_ptr<MorphModel> model)
     for (auto& c : corners_)
         c.assign(E, 0.0f);
     target_.assign(E, 0.0f);
+    slerpBottomScratch_.assign(E, 0.0f);
+    slerpTopScratch_.assign(E, 0.0f);
     cornerFifo_.resize(16, E);
 
     // Weight-space buffers. assign() gives them their full length up front, so the
@@ -165,6 +241,60 @@ void MorphEngine::rebuildBlendTarget(const float (&w)[kNumCorners])
     blendValid_ = true;
 }
 
+void MorphEngine::rebuildBlendTargetSlerp(const float (&w)[kNumCorners])
+{
+    // Nested pairwise SLERP over the same corner pairing the bilinear weights
+    // imply: bottom row = corners 0 (BL), 1 (BR), top row = corners 2 (TL),
+    // 3 (TR); slerp each row across x, then slerp the two rows across y. A row
+    // with only one corner assigned collapses to that corner (no x-dependence,
+    // same as the linear path renormalising it away); a row with neither
+    // assigned drops out and the result is just the other row -- mirroring how
+    // the linear weights renormalise over whichever corners are assigned.
+    const int E = model_->embeddingDim();
+    if (static_cast<int>(target_.size()) != E)
+        target_.assign(E, 0.0f);
+
+    const bool haveBL = assigned_[0], haveBR = assigned_[1];
+    const bool haveTL = assigned_[2], haveTR = assigned_[3];
+
+    const float* bottom = nullptr;
+    const bool bottomValid = haveBL || haveBR;
+    if (haveBL && haveBR)
+    {
+        slerpInto(corners_[0].data(), corners_[1].data(), E, x_, slerpBottomScratch_.data());
+        bottom = slerpBottomScratch_.data();
+    }
+    else if (haveBL)
+        bottom = corners_[0].data();
+    else if (haveBR)
+        bottom = corners_[1].data();
+
+    const float* top = nullptr;
+    const bool topValid = haveTL || haveTR;
+    if (haveTL && haveTR)
+    {
+        slerpInto(corners_[2].data(), corners_[3].data(), E, x_, slerpTopScratch_.data());
+        top = slerpTopScratch_.data();
+    }
+    else if (haveTL)
+        top = corners_[2].data();
+    else if (haveTR)
+        top = corners_[3].data();
+
+    if (bottomValid && topValid)
+        slerpInto(bottom, top, E, y_, target_.data());
+    else if (bottomValid)
+        std::copy(bottom, bottom + E, target_.begin());
+    else if (topValid)
+        std::copy(top, top + E, target_.begin());
+    else
+        std::fill(target_.begin(), target_.end(), 0.0f); // caller only calls this when computeBlendWeights() found "any"
+
+    model_->foldEmbedding(target_, blendTarget_);
+    std::copy(w, w + kNumCorners, lastBlendW_);
+    blendValid_ = true;
+}
+
 void MorphEngine::computeTarget()
 {
     const int E = model_->embeddingDim();
@@ -211,8 +341,14 @@ void MorphEngine::prepare(double sampleRate, int maxBlockSize)
             model_->foldEmbedding(corners_[i], foldedCorners_[i]);
     }
 
+    lastUsedSlerp_ = slerpActive();
     if (any)
-        rebuildBlendTarget(w);
+    {
+        if (lastUsedSlerp_)
+            rebuildBlendTargetSlerp(w);
+        else
+            rebuildBlendTarget(w);
+    }
     else
         model_->foldEmbedding(target_, blendTarget_); // degenerate: no corners assigned
 
@@ -273,13 +409,18 @@ void MorphEngine::processBlock(NAM_SAMPLE* in, NAM_SAMPLE* out, int numFrames)
     float w[kNumCorners];
     if (computeBlendWeights(w))
     {
-        bool moved = !blendValid_;
+        const bool wantSlerp = slerpActive();
+        bool moved = !blendValid_ || wantSlerp != lastUsedSlerp_;
         for (int i = 0; i < kNumCorners && !moved; ++i)
             moved = (w[i] != lastBlendW_[i]);
 
         if (moved)
         {
-            rebuildBlendTarget(w);
+            if (wantSlerp)
+                rebuildBlendTargetSlerp(w);
+            else
+                rebuildBlendTarget(w);
+            lastUsedSlerp_ = wantSlerp;
             settled_ = false;
         }
     }

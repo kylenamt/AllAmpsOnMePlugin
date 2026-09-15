@@ -103,6 +103,7 @@ std::unique_ptr<MorphModel> MorphModel::fromBundleJson(const std::string& jsonTe
     model->embeddingDim_ = E;
     model->headKernel_ = arch.at("head_kernel").get<int>();
     model->headScale_ = arch.at("head_scale").get<float>();
+    model->activation_ = arch.value("activation", std::string("LeakyReLU"));
     model->kernelSizes_ = readIntArray(arch.at("kernel_sizes"), "arch.kernel_sizes");
     model->dilations_ = readIntArray(arch.at("dilations"), "arch.dilations");
 
@@ -333,7 +334,10 @@ std::string MorphModel::buildNamJson(const std::vector<float>& namWeights) const
     layer["bottleneck"] = channels_;
     layer["kernel_sizes"] = kernelSizes_;
     layer["dilations"] = dilations_;
-    layer["activation"] = {{"type", "LeakyReLU"}, {"negative_slope", 0.01}};
+    // negative_slope is only consulted by NAM for LeakyReLU/PReLU/LeakyHardtanh
+    // (see activations.cpp's ActivationConfig::from_json); harmless to include
+    // for other types.
+    layer["activation"] = {{"type", activation_}, {"negative_slope", 0.01}};
     layer["layer1x1"] = {{"active", true}, {"groups", 1}};
 
     json cfg;

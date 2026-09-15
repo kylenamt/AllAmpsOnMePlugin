@@ -73,11 +73,15 @@ private:
     LcdReadout presetChip_;
     juce::Label help_;
 
-    // RANGE / SMOOTH controls block, below the corner cards.
+    // RANGE / SMOOTH controls block, below the corner cards. SLERP is a third
+    // row in the same block, visible only for a model whose embeddings are
+    // normalised (MorphModel::embeddingsNormalized()) -- see refreshModelChip().
     mrta::ParameterSlider rangeSlider_;
     mrta::ParameterSlider smoothSlider_;
     juce::Label rangeLabel_, rangeValue_;
     juce::Label smoothLabel_, smoothValue_;
+    mrta::ParameterButton slerpToggle_;
+    juce::Label slerpLabel_;
 
     // Knob row: Input, Bass, Mid, Treble, Presence | divider | Output.
     mrta::ParameterSlider inputGain_;

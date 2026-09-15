@@ -93,6 +93,18 @@ public:
     const std::string& runName() const { return runName_; }
     const std::vector<Profile>& profiles() const { return profiles_; }
 
+    // Whether this run's embeddings live on a fixed-radius hypersphere (some
+    // exports normalise the embedding and bake a constant scale into it at
+    // export time). Nothing in the bundle JSON declares this -- the bundle's
+    // own `profiles` array is a single "Table mean" entry, too small a sample
+    // to tell -- so it is detected once by the caller from the wider profile
+    // catalogue (many more samples) and cached here via
+    // setEmbeddingsNormalized(), rather than recomputed on every query.
+    // Governs whether spherical (SLERP) morphing is offered for this model;
+    // see MorphEngine.
+    bool embeddingsNormalized() const { return embeddingsNormalized_; }
+    void setEmbeddingsNormalized(bool v) { embeddingsNormalized_ = v; }
+
     // Number of floats a folded weight stream contains (what NAM will consume).
     std::size_t namWeightCount() const;
 
@@ -150,9 +162,15 @@ private:
     int embeddingDim_ = 0;
     int headKernel_ = 0;
     float headScale_ = 0.0f;
+    // Per-layer nonlinearity name, exactly as NAM's activations.cpp expects
+    // (e.g. "LeakyReLU", "Tanh"). Bundles predating this field (no
+    // 'arch.activation' key) default to "LeakyReLU", the only activation any
+    // exporter used before delta_a2_v2 introduced Tanh.
+    std::string activation_ = "LeakyReLU";
     double sampleRate_ = 48000.0;
     std::string runSha8_;
     std::string runName_;
+    bool embeddingsNormalized_ = false;
 
     std::vector<int> kernelSizes_;
     std::vector<int> dilations_;
